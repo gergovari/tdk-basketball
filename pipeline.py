@@ -1,4 +1,5 @@
 import cv2
+import csv
 from typing import List
 from video import Video
 from ml import YOLOFiltered
@@ -111,3 +112,44 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
         hud.draw(video, frame)
 
         video.write(frame)
+
+def export_skeleton_data(obj_frames, output_path, fps, release_frame):
+    import os
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    with open(output_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "frame", "time_sec", "released", "handedness",
+            "left_shoulder", "left_elbow", "left_knee", 
+            "right_shoulder", "right_elbow", "right_knee"
+        ])
+        
+        for i, obj_frame in enumerate(obj_frames):
+            if release_frame != -1 and i > release_frame:
+                break
+                
+            skel = next((obj for obj in obj_frame if isinstance(obj, Skeleton)), None)
+            
+            time_sec = i / fps if fps else 0
+            released = release_frame != -1 and i >= release_frame
+            
+            active_side = "Unknown"
+            if skel:
+                if 15 in skel.landmarks and 16 in skel.landmarks:
+                    if skel.landmarks[16].y < skel.landmarks[15].y:
+                        active_side = "Right"
+                    else:
+                        active_side = "Left"
+                        
+            row = [i, f"{time_sec:.3f}", released, active_side, "", "", "", "", "", ""]
+            
+            if skel:
+                row[4] = f"{skel.left_shoulder_angle:.1f}" if skel.left_shoulder_angle is not None else ""
+                row[5] = f"{skel.left_elbow_angle:.1f}" if skel.left_elbow_angle is not None else ""
+                row[6] = f"{skel.left_knee_angle:.1f}" if skel.left_knee_angle is not None else ""
+                row[7] = f"{skel.right_shoulder_angle:.1f}" if skel.right_shoulder_angle is not None else ""
+                row[8] = f"{skel.right_elbow_angle:.1f}" if skel.right_elbow_angle is not None else ""
+                row[9] = f"{skel.right_knee_angle:.1f}" if skel.right_knee_angle is not None else ""
+                
+            writer.writerow(row)

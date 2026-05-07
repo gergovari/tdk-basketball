@@ -3,7 +3,11 @@ from ultralytics import YOLO
 from config import InputParams, YOLOParams, MediaPipeParams
 from video import Video
 from ml import YOLOFiltered, MediaPipe
-from detectors import CombinedThrowerDetector, ActionReleaseDetector, SkeletonReleaseDetector
+from detectors import (
+    CombinedThrowerDetector,
+    ActionReleaseDetector,
+    SkeletonReleaseDetector,
+)
 from pipeline import (
     extract_obj_frames,
     enrich_player_with_action,
@@ -11,10 +15,11 @@ from pipeline import (
     append_thrower_skeleton,
     cut_after_release,
     render_video,
+    export_skeleton_data,
 )
 
-params = InputParams(video_id="ft1_v108_002351_x264", data_path="data/")
-# params = InputParams(video_id="nba1", data_path="data/")
+# params = InputParams(video_id="ft1_v108_002351_x264", data_path="data/")
+params = InputParams(video_id="nba1", data_path="data/")
 player_filter = ["player", "person", "human"]
 ball_filter = ["ball"]
 yolo_filter = player_filter + ball_filter
@@ -69,6 +74,10 @@ obj_frames, release_frame, release_detector_name = cut_after_release(
 if release_frame == -1:
     print("Release not detected!")
 print("Cut!")
+
+print(f"Exporting skeleton data to {params.output_data_path}...")
+export_skeleton_data(obj_frames, params.output_data_path, video.fps, release_frame)
+print("Exported!")
 
 print(f"Writing out to {params.output_video_path}...")
 render_video(video, obj_frames, release_frame, release_detector_name)

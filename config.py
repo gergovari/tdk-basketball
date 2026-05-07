@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List
 
+
 @dataclass
 class InputParams:
     video_id: str
@@ -16,12 +17,14 @@ class InputParams:
 
     @property
     def output_data_path(self):
-        return f"{self.data_path}/data/{self.video_id}.json"
+        return f"{self.data_path}/data/{self.video_id}.csv"
+
 
 @dataclass
 class YOLOParams:
     model_path: str
     name_filter: List[str]
+
 
 @dataclass
 class MediaPipeParams:

@@ -380,7 +380,7 @@ class BallProximityThrowerDetector(ThrowerDetector):
     ball_filter: List[str] = field(default_factory=lambda: ["ball"])
 
     def detect(self, obj_frames):
-        thrower_ids = set()
+        thrower_ids = {}
         relevant_obj_frames = []
         for obj_frame in obj_frames:
             for obj in obj_frame:
@@ -407,9 +407,9 @@ class BallProximityThrowerDetector(ThrowerDetector):
                         closest_player = player
 
                 if closest_player is not None:
-                    thrower_ids.add(closest_player)
+                    thrower_ids[closest_player] = None
 
-        return thrower_ids
+        return list(thrower_ids.keys())
 
 
 @dataclass
@@ -417,15 +417,56 @@ class ActionThrowerDetector(ThrowerDetector):
     action_filter: List[str] = field(default_factory=lambda: ["jump-shot"])
 
     def detect(self, obj_frames):
-        throwers = set()
+        throwers = {}
 
         for obj_frame in obj_frames:
             for obj in obj_frame:
                 if self.action_filter and obj.action:
                     if any(word in obj.action for word in self.action_filter):
-                        throwers.add(obj)
+                        throwers[obj] = None
 
-        return throwers
+        return list(throwers.keys())
+
+
+@dataclass
+class CombinedThrowerDetector(ThrowerDetector):
+    ball_filter: List[str] = field(default_factory=lambda: ["ball"])
+    action_filter: List[str] = field(default_factory=lambda: ["jump-shot"])
+
+    def __post_init__(self):
+        self.ball_detector = BallProximityThrowerDetector(self.ball_filter)
+        self.action_detector = ActionThrowerDetector(self.action_filter)
+
+    def detect(self, obj_frames):
+        all_balls = set()
+
+        for obj_frame in obj_frames:
+            for obj in obj_frame:
+                if any(word in obj.name for word in self.ball_filter) and obj.id != -1:
+                    all_balls.add(obj.id)
+
+        shooters = self.action_detector.detect(obj_frames)
+        players_with_ball = self.ball_detector.detect(obj_frames)
+
+        num_balls = len(all_balls)
+        valid_shooters = [s for s in shooters if s.id != -1]
+        num_shooters = len(valid_shooters)
+
+        if num_balls == 0 and num_shooters > 0:
+            return [shooters[0]]
+        elif num_balls == 1:
+            # Overlap priority to ensure reliability if both matched
+            overlap = [p for p in players_with_ball if p in shooters]
+            return overlap if overlap else players_with_ball
+        elif num_balls > 1 and num_shooters == 1:
+            return shooters
+        elif num_balls > 1 and num_shooters > 1:
+            # leave that open for now as I want to detect release in the future from skeleton (and ball if detected)
+            # For now, gracefully fallback so it works instead of returning empty
+            overlap = [p for p in players_with_ball if p in shooters]
+            return overlap if overlap else (players_with_ball if players_with_ball else shooters)
+
+        return []
 
 
 @dataclass
@@ -564,11 +605,15 @@ obj_frames = enrich_player_with_action(player_filter, obj_frames)
 print("Enriched!")
 
 print("Detect thrower...")
-detectors = [ActionThrowerDetector(), BallProximityThrowerDetector(ball_filter)]
+detectors = [CombinedThrowerDetector(ball_filter=ball_filter)]
 detected_throwers = list(
     dict.fromkeys(item for d in detectors for item in d.detect(obj_frames))
 )
-thrower_id = detected_throwers[0].id
+thrower_id = detected_throwers[0].id if detected_throwers else None
+if thrower_id is not None:
+    print(f"Thrower ID: {thrower_id}")
+else:
+    print("No valid thrower detected for this clip!")
 print("Detected!")
 
 print("Filter object frames...")

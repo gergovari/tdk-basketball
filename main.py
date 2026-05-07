@@ -164,10 +164,11 @@ class Rectangle(Drawable):
         )
 
     def draw(self, video, frame):
+        ui_scale = frame.shape[0] / 720.0
         draw_ratio = video.scale / self.detection_scale
         pt1 = (int(self.x1 * draw_ratio), int(self.y1 * draw_ratio))
         pt2 = (int(self.x2 * draw_ratio), int(self.y2 * draw_ratio))
-        thickness = max(1, int(1 * video.scale))
+        thickness = max(1, int(1 * ui_scale))
 
         cv2.rectangle(
             frame,
@@ -196,14 +197,15 @@ class Object(Drawable):
         return self.id == other.id
 
     def draw_text(self, video: Video, frame):
+        ui_scale = frame.shape[0] / 720.0
         draw_ratio = video.scale / self.detection_scale
-        thickness = max(1, int(1 * video.scale))
+        thickness = max(1, int(1 * ui_scale))
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.3 * video.scale
+        font_scale = 0.3 * ui_scale
         color = (147, 20, 255)
 
         text_x = int(self.rect.x1 * draw_ratio)
-        text_y = int(self.rect.y1 * draw_ratio) - int(10 * video.scale)
+        text_y = int(self.rect.y1 * draw_ratio) - int(10 * ui_scale)
 
         cv2.putText(
             frame,
@@ -218,8 +220,8 @@ class Object(Drawable):
         if self.action:
             (t_w, t_h), _ = cv2.getTextSize(self.action, font, font_scale, thickness)
 
-            act_x = int(self.rect.x2 * draw_ratio) - t_w - int(2 * video.scale)
-            act_y = int(self.rect.y2 * draw_ratio) - int(2 * video.scale)
+            act_x = int(self.rect.x2 * draw_ratio) - t_w - int(2 * ui_scale)
+            act_y = int(self.rect.y2 * draw_ratio) - int(2 * ui_scale)
 
             cv2.putText(
                 frame,
@@ -292,42 +294,55 @@ class Skeleton(Drawable):
     detection_scale: float = 1.0
 
     def calculate_angle(self, a_idx, b_idx, c_idx):
-        if a_idx not in self.landmarks or b_idx not in self.landmarks or c_idx not in self.landmarks:
+        if (
+            a_idx not in self.landmarks
+            or b_idx not in self.landmarks
+            or c_idx not in self.landmarks
+        ):
             return None
         a = self.landmarks[a_idx]
         b = self.landmarks[b_idx]
         c = self.landmarks[c_idx]
-        if (a.visibility <= self.visibility_threshold or 
-            b.visibility <= self.visibility_threshold or 
-            c.visibility <= self.visibility_threshold):
+        if (
+            a.visibility <= self.visibility_threshold
+            or b.visibility <= self.visibility_threshold
+            or c.visibility <= self.visibility_threshold
+        ):
             return None
-            
+
         radians = math.atan2(c.y - b.y, c.x - b.x) - math.atan2(a.y - b.y, a.x - b.x)
         angle = abs(math.degrees(radians))
         return 360 - angle if angle > 180 else angle
 
     @property
-    def left_elbow_angle(self): return self.calculate_angle(11, 13, 15)
-    
+    def left_elbow_angle(self):
+        return self.calculate_angle(11, 13, 15)
+
     @property
-    def right_elbow_angle(self): return self.calculate_angle(12, 14, 16)
-    
+    def right_elbow_angle(self):
+        return self.calculate_angle(12, 14, 16)
+
     @property
-    def left_shoulder_angle(self): return self.calculate_angle(23, 11, 13)
-    
+    def left_shoulder_angle(self):
+        return self.calculate_angle(23, 11, 13)
+
     @property
-    def right_shoulder_angle(self): return self.calculate_angle(24, 12, 14)
-    
+    def right_shoulder_angle(self):
+        return self.calculate_angle(24, 12, 14)
+
     @property
-    def left_knee_angle(self): return self.calculate_angle(23, 25, 27)
-    
+    def left_knee_angle(self):
+        return self.calculate_angle(23, 25, 27)
+
     @property
-    def right_knee_angle(self): return self.calculate_angle(24, 26, 28)
+    def right_knee_angle(self):
+        return self.calculate_angle(24, 26, 28)
 
     def draw(self, video: Video, frame):
+        ui_scale = frame.shape[0] / 720.0
         draw_ratio = video.scale / self.detection_scale
-        radius = max(2, int(2 * video.scale))
-        bone_thickness = max(1, int(1 * video.scale))
+        radius = max(2, int(2 * ui_scale))
+        bone_thickness = max(1, int(1 * ui_scale))
         bone_color = (255, 255, 255)
         joint_color = (0, 255, 0)
 
@@ -497,14 +512,11 @@ class CombinedThrowerDetector(ThrowerDetector):
         if num_balls == 0 and num_shooters > 0:
             return [shooters[0]]
         elif num_balls == 1:
-            # Overlap priority to ensure reliability if both matched
             overlap = [p for p in players_with_ball if p in shooters]
             return overlap if overlap else players_with_ball
         elif num_balls > 1 and num_shooters == 1:
             return shooters
         elif num_balls > 1 and num_shooters > 1:
-            # leave that open for now as I want to detect release in the future from skeleton (and ball if detected)
-            # For now, gracefully fallback so it works instead of returning empty
             overlap = [p for p in players_with_ball if p in shooters]
             return (
                 overlap
@@ -550,13 +562,16 @@ class ReleaseDetector(ABC):
     def detect(self, obj_frames, fps: int) -> int:
         pass
 
+
 @dataclass
 class ActionReleaseDetector(ReleaseDetector):
     def detect(self, obj_frames, fps: int) -> int:
         required_frames = fps * 0.2
         consecutive = 0
         for i, obj_frame in enumerate(obj_frames):
-            has_jump_shot = any(getattr(obj, "action", "") == "jump-shot" for obj in obj_frame)
+            has_jump_shot = any(
+                getattr(obj, "action", "") == "jump-shot" for obj in obj_frame
+            )
             if has_jump_shot:
                 consecutive += 1
                 if consecutive >= required_frames:
@@ -565,21 +580,41 @@ class ActionReleaseDetector(ReleaseDetector):
                 consecutive = 0
         return -1
 
+
 @dataclass
 class SkeletonReleaseDetector(ReleaseDetector):
     def detect(self, obj_frames, fps: int) -> int:
         for i, obj_frame in enumerate(obj_frames):
             for obj in obj_frame:
                 if isinstance(obj, Skeleton):
-                    la = (obj.left_knee_angle, obj.left_shoulder_angle, obj.left_elbow_angle)
-                    ra = (obj.right_knee_angle, obj.right_shoulder_angle, obj.right_elbow_angle)
-                    
-                    left_shot = all(x is not None for x in la) and la[0] > 160 and la[1] > 120 and la[2] > 140
-                    right_shot = all(x is not None for x in ra) and ra[0] > 160 and ra[1] > 120 and ra[2] > 140
-                    
+                    la = (
+                        obj.left_knee_angle,
+                        obj.left_shoulder_angle,
+                        obj.left_elbow_angle,
+                    )
+                    ra = (
+                        obj.right_knee_angle,
+                        obj.right_shoulder_angle,
+                        obj.right_elbow_angle,
+                    )
+
+                    left_shot = (
+                        all(x is not None for x in la)
+                        and la[0] > 160
+                        and la[1] > 120
+                        and la[2] > 140
+                    )
+                    right_shot = (
+                        all(x is not None for x in ra)
+                        and ra[0] > 160
+                        and ra[1] > 120
+                        and ra[2] > 140
+                    )
+
                     if left_shot or right_shot:
                         return i
         return -1
+
 
 @dataclass
 class HUD(Drawable):
@@ -589,22 +624,25 @@ class HUD(Drawable):
     def draw(self, video: Video, frame):
         overlay = frame.copy()
         h, w = frame.shape[:2]
-        box_w, box_h = int(250 * video.scale), int(150 * video.scale)
-        box_x, box_y = w - box_w - int(20 * video.scale), int(20 * video.scale)
-        
-        cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (0, 0, 0), -1)
+        ui_scale = h / 720.0
+        box_w, box_h = int(250 * ui_scale), int(150 * ui_scale)
+        box_x, box_y = w - box_w - int(20 * ui_scale), int(20 * ui_scale)
+
+        cv2.rectangle(
+            overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (0, 0, 0), -1
+        )
         cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
-        
+
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.5 * video.scale
-        thickness = max(1, int(1 * video.scale))
-        
-        left_color = (0, 165, 255) # Orange
-        right_color = (255, 0, 0) # Blue
+        font_scale = 0.5 * ui_scale
+        thickness = max(1, int(1 * ui_scale))
+
+        left_color = (0, 165, 255)  # Orange
+        right_color = (255, 0, 0)  # Blue
         text_color = (255, 255, 255)
-        
-        y_offset = box_y + int(25 * video.scale)
-        
+
+        y_offset = box_y + int(25 * ui_scale)
+
         active_side = "Unknown"
         if self.skeleton:
             if 15 in self.skeleton.landmarks and 16 in self.skeleton.landmarks:
@@ -612,28 +650,89 @@ class HUD(Drawable):
                     active_side = "Right"
                 else:
                     active_side = "Left"
-        
-        cv2.putText(frame, f"Hand: {active_side}", (box_x + 10, y_offset), font, font_scale, text_color, thickness)
-        y_offset += int(25 * video.scale)
-        
+
+        cv2.putText(
+            frame,
+            f"Hand: {active_side}",
+            (box_x + int(10 * ui_scale), y_offset),
+            font,
+            font_scale,
+            text_color,
+            thickness,
+        )
+        y_offset += int(25 * ui_scale)
+
         if self.skeleton:
+
             def draw_angle(name, left_val, right_val, y):
                 l_str = f"{int(left_val)}" if left_val is not None else "N/A"
                 r_str = f"{int(right_val)}" if right_val is not None else "N/A"
-                cv2.putText(frame, f"{name}:", (box_x + 10, y), font, font_scale, text_color, thickness)
-                cv2.putText(frame, l_str, (box_x + 120, y), font, font_scale, left_color, thickness)
-                cv2.putText(frame, r_str, (box_x + 180, y), font, font_scale, right_color, thickness)
-                
-            draw_angle("Shoulder", self.skeleton.left_shoulder_angle, self.skeleton.right_shoulder_angle, y_offset)
-            y_offset += int(25 * video.scale)
-            draw_angle("Elbow", self.skeleton.left_elbow_angle, self.skeleton.right_elbow_angle, y_offset)
-            y_offset += int(25 * video.scale)
-            draw_angle("Knee", self.skeleton.left_knee_angle, self.skeleton.right_knee_angle, y_offset)
-            
+                cv2.putText(
+                    frame,
+                    f"{name}:",
+                    (box_x + int(10 * ui_scale), y),
+                    font,
+                    font_scale,
+                    text_color,
+                    thickness,
+                )
+                cv2.putText(
+                    frame,
+                    l_str,
+                    (box_x + int(120 * ui_scale), y),
+                    font,
+                    font_scale,
+                    left_color,
+                    thickness,
+                )
+                cv2.putText(
+                    frame,
+                    r_str,
+                    (box_x + int(180 * ui_scale), y),
+                    font,
+                    font_scale,
+                    right_color,
+                    thickness,
+                )
+
+            draw_angle(
+                "Shoulder",
+                self.skeleton.left_shoulder_angle,
+                self.skeleton.right_shoulder_angle,
+                y_offset,
+            )
+            y_offset += int(25 * ui_scale)
+            draw_angle(
+                "Elbow",
+                self.skeleton.left_elbow_angle,
+                self.skeleton.right_elbow_angle,
+                y_offset,
+            )
+            y_offset += int(25 * ui_scale)
+            draw_angle(
+                "Knee",
+                self.skeleton.left_knee_angle,
+                self.skeleton.right_knee_angle,
+                y_offset,
+            )
+
         if self.released:
             text = "RELEASED"
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.5 * video.scale, max(2, int(3 * video.scale)))
-            cv2.putText(frame, text, (int((w - tw) / 2), int((h + th) / 2)), cv2.FONT_HERSHEY_SIMPLEX, 1.5 * video.scale, (0, 0, 255), max(2, int(3 * video.scale)))
+            (tw, th), _ = cv2.getTextSize(
+                text,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.5 * ui_scale,
+                max(2, int(3 * ui_scale)),
+            )
+            cv2.putText(
+                frame,
+                text,
+                (int((w - tw) / 2), int((h + th) / 2)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.5 * ui_scale,
+                (0, 0, 255),
+                max(2, int(3 * ui_scale)),
+            )
 
 
 def extract_obj_frames(video: Video, yolo: YOLOFiltered):
@@ -707,14 +806,14 @@ def cut_after_release(obj_frames, detectors, fps):
         idx = d.detect(obj_frames, fps)
         if idx != -1 and (earliest == -1 or idx < earliest):
             earliest = idx
-            
+
     if earliest != -1:
-        cut = obj_frames[:earliest + 1]
+        cut = obj_frames[: earliest + 1]
         last = list(cut[-1])
-        
+
         for _ in range(3 * fps):
             cut.append(last)
-            
+
         return cut, earliest
     return obj_frames, -1
 
@@ -730,23 +829,22 @@ def render_video(video: Video, obj_frames, release_frame=-1):
         frame_idx = min(i, len(video) - 1)
         if release_frame != -1:
             frame_idx = min(frame_idx, release_frame)
-            
+
         frame = video[frame_idx].copy()
-        
+
         skel = next((obj for obj in obj_frame if isinstance(obj, Skeleton)), None)
-        is_released = (release_frame != -1 and i >= release_frame)
+        is_released = release_frame != -1 and i >= release_frame
         hud = HUD(skeleton=skel, released=is_released)
-        
+
         for obj in obj_frame:
             obj.draw(video, frame)
-            
+
         hud.draw(video, frame)
 
         video.write(frame)
-    video.scale = 1
 
 
-params = InputParams(video_id="nba1", data_path="data/")
+params = InputParams(video_id="ft1_v108_002351_x264", data_path="data/")
 player_filter = ["player", "person", "human"]
 ball_filter = ["ball"]
 yolo_filter = player_filter + ball_filter

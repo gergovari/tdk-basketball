@@ -8,6 +8,8 @@ class HUD(Drawable):
     skeleton: Skeleton
     released: bool = False
     detector_name: str = ""
+    active_side: str = "Unknown"
+    angles: dict = None
 
     def draw(self, video: Video, frame):
         overlay = frame.copy()
@@ -31,17 +33,9 @@ class HUD(Drawable):
 
         y_offset = box_y + int(25 * ui_scale)
 
-        active_side = "Unknown"
-        if self.skeleton:
-            if 15 in self.skeleton.landmarks and 16 in self.skeleton.landmarks:
-                if self.skeleton.landmarks[16].y < self.skeleton.landmarks[15].y:
-                    active_side = "Right"
-                else:
-                    active_side = "Left"
-
         cv2.putText(
             frame,
-            f"Hand: {active_side}",
+            f"Hand: {self.active_side}",
             (box_x + int(10 * ui_scale), y_offset),
             font,
             font_scale,
@@ -50,7 +44,7 @@ class HUD(Drawable):
         )
         y_offset += int(25 * ui_scale)
 
-        if self.skeleton:
+        if self.angles:
 
             def draw_angle(name, left_val, right_val, y):
                 l_str = f"{int(left_val)}" if left_val is not None else "N/A"
@@ -85,22 +79,22 @@ class HUD(Drawable):
 
             draw_angle(
                 "Shoulder",
-                self.skeleton.left_shoulder_angle,
-                self.skeleton.right_shoulder_angle,
+                self.angles.get("ls"),
+                self.angles.get("rs"),
                 y_offset,
             )
             y_offset += int(25 * ui_scale)
             draw_angle(
                 "Elbow",
-                self.skeleton.left_elbow_angle,
-                self.skeleton.right_elbow_angle,
+                self.angles.get("le"),
+                self.angles.get("re"),
                 y_offset,
             )
             y_offset += int(25 * ui_scale)
             draw_angle(
                 "Knee",
-                self.skeleton.left_knee_angle,
-                self.skeleton.right_knee_angle,
+                self.angles.get("lk"),
+                self.angles.get("rk"),
                 y_offset,
             )
 

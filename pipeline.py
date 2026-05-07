@@ -151,6 +151,10 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
         target_scale = 1.0
     video.scale = target_scale
     last_valid_frame = None
+    
+    last_active_side = "Unknown"
+    last_angles = {"ls": None, "le": None, "lk": None, "rs": None, "re": None, "rk": None}
+    
     for i, obj_frame in enumerate(obj_frames):
         frame_idx = min(i, len(video) - 1)
         if release_frame != -1:
@@ -167,7 +171,27 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
 
         skel = next((obj for obj in obj_frame if isinstance(obj, Skeleton)), None)
         is_released = release_frame != -1 and i >= release_frame
-        hud = HUD(skeleton=skel, released=is_released, detector_name=release_detector_name)
+        
+        if skel:
+            if 15 in skel.landmarks and 16 in skel.landmarks:
+                if skel.landmarks[16].y < skel.landmarks[15].y:
+                    last_active_side = "Right"
+                else:
+                    last_active_side = "Left"
+            if skel.left_shoulder_angle is not None: last_angles["ls"] = skel.left_shoulder_angle
+            if skel.left_elbow_angle is not None: last_angles["le"] = skel.left_elbow_angle
+            if skel.left_knee_angle is not None: last_angles["lk"] = skel.left_knee_angle
+            if skel.right_shoulder_angle is not None: last_angles["rs"] = skel.right_shoulder_angle
+            if skel.right_elbow_angle is not None: last_angles["re"] = skel.right_elbow_angle
+            if skel.right_knee_angle is not None: last_angles["rk"] = skel.right_knee_angle
+            
+        hud = HUD(
+            skeleton=skel, 
+            released=is_released, 
+            detector_name=release_detector_name,
+            active_side=last_active_side,
+            angles=last_angles
+        )
 
         for obj in obj_frame:
             obj.draw(video, frame)
@@ -207,6 +231,9 @@ def export_skeleton_data(obj_frames, output_path, fps, release_frame):
             "right_shoulder", "right_elbow", "right_knee"
         ])
         
+        last_active_side = "Unknown"
+        last_angles = ["", "", "", "", "", ""]
+        
         for i, obj_frame in enumerate(obj_frames):
             if release_frame != -1 and i > release_frame:
                 break
@@ -216,22 +243,24 @@ def export_skeleton_data(obj_frames, output_path, fps, release_frame):
             time_sec = i / fps if fps else 0
             released = release_frame != -1 and i >= release_frame
             
-            active_side = "Unknown"
             if skel:
                 if 15 in skel.landmarks and 16 in skel.landmarks:
                     if skel.landmarks[16].y < skel.landmarks[15].y:
-                        active_side = "Right"
+                        last_active_side = "Right"
                     else:
-                        active_side = "Left"
+                        last_active_side = "Left"
                         
-            row = [i, f"{time_sec:.3f}", released, active_side, "", "", "", "", "", ""]
+            row = [i, f"{time_sec:.3f}", released, last_active_side, "", "", "", "", "", ""]
             
             if skel:
-                row[4] = f"{skel.left_shoulder_angle:.1f}" if skel.left_shoulder_angle is not None else ""
-                row[5] = f"{skel.left_elbow_angle:.1f}" if skel.left_elbow_angle is not None else ""
-                row[6] = f"{skel.left_knee_angle:.1f}" if skel.left_knee_angle is not None else ""
-                row[7] = f"{skel.right_shoulder_angle:.1f}" if skel.right_shoulder_angle is not None else ""
-                row[8] = f"{skel.right_elbow_angle:.1f}" if skel.right_elbow_angle is not None else ""
-                row[9] = f"{skel.right_knee_angle:.1f}" if skel.right_knee_angle is not None else ""
+                row[4] = f"{skel.left_shoulder_angle:.1f}" if skel.left_shoulder_angle is not None else last_angles[0]
+                row[5] = f"{skel.left_elbow_angle:.1f}" if skel.left_elbow_angle is not None else last_angles[1]
+                row[6] = f"{skel.left_knee_angle:.1f}" if skel.left_knee_angle is not None else last_angles[2]
+                row[7] = f"{skel.right_shoulder_angle:.1f}" if skel.right_shoulder_angle is not None else last_angles[3]
+                row[8] = f"{skel.right_elbow_angle:.1f}" if skel.right_elbow_angle is not None else last_angles[4]
+                row[9] = f"{skel.right_knee_angle:.1f}" if skel.right_knee_angle is not None else last_angles[5]
+            else:
+                row[4:10] = last_angles
                 
+            last_angles = row[4:10]
             writer.writerow(row)

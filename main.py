@@ -600,15 +600,15 @@ class SkeletonReleaseDetector(ReleaseDetector):
 
                     left_shot = (
                         all(x is not None for x in la)
-                        and la[0] > 160
-                        and la[1] > 120
-                        and la[2] > 140
+                        and la[0] > 170
+                        and la[1] > 130
+                        and la[2] > 150
                     )
                     right_shot = (
                         all(x is not None for x in ra)
-                        and ra[0] > 160
-                        and ra[1] > 120
-                        and ra[2] > 140
+                        and ra[0] > 170
+                        and ra[1] > 130
+                        and ra[2] > 150
                     )
 
                     if left_shot or right_shot:
@@ -620,6 +620,7 @@ class SkeletonReleaseDetector(ReleaseDetector):
 class HUD(Drawable):
     skeleton: Skeleton
     released: bool = False
+    detector_name: str = ""
 
     def draw(self, video: Video, frame):
         overlay = frame.copy()
@@ -724,15 +725,34 @@ class HUD(Drawable):
                 1.5 * ui_scale,
                 max(2, int(3 * ui_scale)),
             )
+            center_x = int((w - tw) / 2)
+            center_y = int((h + th) / 2)
             cv2.putText(
                 frame,
                 text,
-                (int((w - tw) / 2), int((h + th) / 2)),
+                (center_x, center_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1.5 * ui_scale,
                 (0, 0, 255),
                 max(2, int(3 * ui_scale)),
             )
+            if self.detector_name:
+                det_text = f"({self.detector_name})"
+                (dtw, dth), _ = cv2.getTextSize(
+                    det_text,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7 * ui_scale,
+                    max(1, int(1.5 * ui_scale)),
+                )
+                cv2.putText(
+                    frame,
+                    det_text,
+                    (int((w - dtw) / 2), center_y + int(40 * ui_scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7 * ui_scale,
+                    (0, 255, 0),
+                    max(1, int(1.5 * ui_scale)),
+                )
 
 
 def extract_obj_frames(video: Video, yolo: YOLOFiltered):
@@ -802,10 +822,12 @@ def append_thrower_skeleton(video: Video, obj_frames):
 
 def cut_after_release(obj_frames, detectors, fps):
     earliest = -1
+    earliest_detector = ""
     for d in detectors:
         idx = d.detect(obj_frames, fps)
         if idx != -1 and (earliest == -1 or idx < earliest):
             earliest = idx
+            earliest_detector = d.__class__.__name__
 
     if earliest != -1:
         cut = obj_frames[: earliest + 1]
@@ -814,11 +836,11 @@ def cut_after_release(obj_frames, detectors, fps):
         for _ in range(3 * fps):
             cut.append(last)
 
-        return cut, earliest
-    return obj_frames, -1
+        return cut, earliest, earliest_detector
+    return obj_frames, -1, ""
 
 
-def render_video(video: Video, obj_frames, release_frame=-1):
+def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name=""):
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if orig_height > 0:
         target_scale = 720.0 / orig_height
@@ -834,7 +856,9 @@ def render_video(video: Video, obj_frames, release_frame=-1):
 
         skel = next((obj for obj in obj_frame if isinstance(obj, Skeleton)), None)
         is_released = release_frame != -1 and i >= release_frame
-        hud = HUD(skeleton=skel, released=is_released)
+        hud = HUD(
+            skeleton=skel, released=is_released, detector_name=release_detector_name
+        )
 
         for obj in obj_frame:
             obj.draw(video, frame)
@@ -845,12 +869,13 @@ def render_video(video: Video, obj_frames, release_frame=-1):
 
 
 params = InputParams(video_id="ft1_v108_002351_x264", data_path="data/")
+# params = InputParams(video_id="nba1", data_path="data/")
 player_filter = ["player", "person", "human"]
 ball_filter = ["ball"]
 yolo_filter = player_filter + ball_filter
 yolo_params = YOLOParams(model_path="models/basketball-3-m.pt", name_filter=yolo_filter)
 mp_params = MediaPipeParams(
-    model_path="models/pose_landmarker.task", min_pose_conf=0.1, min_track_conf=0.1
+    model_path="models/pose_landmarker.task", min_pose_conf=0, min_track_conf=0
 )
 
 model = YOLO(yolo_params.model_path)
@@ -890,13 +915,15 @@ print("Tracked!")
 
 print("Cut object frames after release...")
 release_detectors = [ActionReleaseDetector(), SkeletonReleaseDetector()]
-obj_frames, release_frame = cut_after_release(obj_frames, release_detectors, video.fps)
+obj_frames, release_frame, release_detector_name = cut_after_release(
+    obj_frames, release_detectors, video.fps
+)
 if release_frame == -1:
     print("Release not detected!")
 print("Cut!")
 
 print(f"Writing out to {params.output_video_path}...")
-render_video(video, obj_frames, release_frame)
+render_video(video, obj_frames, release_frame, release_detector_name)
 print("Wrote!")
 
 video.release()

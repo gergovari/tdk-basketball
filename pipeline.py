@@ -7,6 +7,48 @@ from entities import Skeleton, Landmark
 from detectors import filter_obj_frame
 from utils import ScaledInt
 from ui import HUD
+import os
+
+def split_video_into_scenes(input_path, output_dir, base_id, threshold=0.85):
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        return []
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+
+    scene_idx = 0
+    prev_hist = None
+    
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, f"{base_id}-{scene_idx}.mp4")
+    out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1], None, [50, 60], [0, 180, 0, 256])
+        cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
+
+        if prev_hist is not None:
+            similarity = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL)
+            if similarity < threshold:
+                out.release()
+                scene_idx += 1
+                out_path = os.path.join(output_dir, f"{base_id}-{scene_idx}.mp4")
+                out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+                
+        out.write(frame)
+        prev_hist = hist
+
+    out.release()
+    cap.release()
+    return [f"{base_id}-{i}" for i in range(scene_idx + 1)]
 
 def extract_obj_frames(video: Video, yolo: YOLOFiltered):
     obj_frames = [[] for x in range(len(video))]
@@ -88,19 +130,27 @@ def cut_after_release(obj_frames, detectors, fps):
         return cut, earliest, earliest_detector
     return obj_frames, -1, ""
 
-def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name=""):
+def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name="", scene_num=""):
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if orig_height > 0:
         target_scale = 720.0 / orig_height
     else:
         target_scale = 1.0
     video.scale = target_scale
+    last_valid_frame = None
     for i, obj_frame in enumerate(obj_frames):
         frame_idx = min(i, len(video) - 1)
         if release_frame != -1:
             frame_idx = min(frame_idx, release_frame)
 
-        frame = video[frame_idx].copy()
+        try:
+            frame = video[frame_idx].copy()
+            last_valid_frame = frame
+        except IndexError:
+            if last_valid_frame is not None:
+                frame = last_valid_frame.copy()
+            else:
+                continue
 
         skel = next((obj for obj in obj_frame if isinstance(obj, Skeleton)), None)
         is_released = release_frame != -1 and i >= release_frame
@@ -110,6 +160,25 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
             obj.draw(video, frame)
 
         hud.draw(video, frame)
+        
+        if scene_num:
+            h, w = frame.shape[:2]
+            ui_scale = h / 720.0
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.8 * ui_scale
+            thickness = max(1, int(2 * ui_scale))
+            text = f"Scene {scene_num}"
+            (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
+            
+            cv2.putText(
+                frame,
+                text,
+                (w - tw - int(20 * ui_scale), h - int(20 * ui_scale)),
+                font,
+                font_scale,
+                (255, 255, 255),
+                thickness,
+            )
 
         video.write(frame)
 

@@ -96,6 +96,8 @@ def main():
             if thrower_id == -1:
                 print("No valid thrower detected for this clip! Skipping...")
                 video.release()
+                if os.path.exists(params.output_video_path):
+                    os.remove(params.output_video_path)
                 continue
             print("Detected!")
 
@@ -115,6 +117,8 @@ def main():
             if release_frame == -1:
                 print("Release not detected! Skipping...")
                 video.release()
+                if os.path.exists(params.output_video_path):
+                    os.remove(params.output_video_path)
                 continue
             print("Cut!")
 

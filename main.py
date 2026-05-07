@@ -169,7 +169,7 @@ class Rectangle(Drawable):
         )
 
 
-@dataclass
+@dataclass(eq=False)
 class Object(Drawable):
     id: int
     conf: float
@@ -177,6 +177,14 @@ class Object(Drawable):
     rect: Rectangle
     action: str = ""
     detection_scale: float = 1.0
+
+    def __hash__(self):
+        return hash(self.id)
+
+    def __eq__(self, other):
+        if not isinstance(other, Object):
+            return False
+        return self.id == other.id
 
     def draw_text(self, video: Video, frame):
         draw_ratio = video.scale / self.detection_scale
@@ -372,7 +380,7 @@ class BallProximityThrowerDetector(ThrowerDetector):
     ball_filter: List[str] = field(default_factory=lambda: ["ball"])
 
     def detect(self, obj_frames):
-        thrower_ids = []
+        thrower_ids = set()
         relevant_obj_frames = []
         for obj_frame in obj_frames:
             for obj in obj_frame:
@@ -381,7 +389,6 @@ class BallProximityThrowerDetector(ThrowerDetector):
                     break
 
         for obj_frame in relevant_obj_frames:
-            local_thrower_ids = []
             balls = filter_obj_frame(
                 lambda x: any(word in x.name for word in self.ball_filter), obj_frame
             )
@@ -400,11 +407,25 @@ class BallProximityThrowerDetector(ThrowerDetector):
                         closest_player = player
 
                 if closest_player is not None:
-                    local_thrower_ids.append(closest_player)
-
-            thrower_ids.extend(local_thrower_ids)
+                    thrower_ids.add(closest_player)
 
         return thrower_ids
+
+
+@dataclass
+class ActionThrowerDetector(ThrowerDetector):
+    action_filter: List[str] = field(default_factory=lambda: ["jump-shot"])
+
+    def detect(self, obj_frames):
+        throwers = set()
+
+        for obj_frame in obj_frames:
+            for obj in obj_frame:
+                if self.action_filter and obj.action:
+                    if any(word in obj.action for word in self.action_filter):
+                        throwers.add(obj)
+
+        return throwers
 
 
 @dataclass
@@ -543,8 +564,10 @@ obj_frames = enrich_player_with_action(player_filter, obj_frames)
 print("Enriched!")
 
 print("Detect thrower...")
-detectors = [BallProximityThrowerDetector(ball_filter)]
-detected_throwers = [item for d in detectors for item in d.detect(obj_frames)]
+detectors = [ActionThrowerDetector(), BallProximityThrowerDetector(ball_filter)]
+detected_throwers = list(
+    dict.fromkeys(item for d in detectors for item in d.detect(obj_frames))
+)
 thrower_id = detected_throwers[0].id
 print("Detected!")
 

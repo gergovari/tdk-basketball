@@ -178,3 +178,25 @@ class SkeletonReleaseDetector(ReleaseDetector):
                     if left_shot or right_shot:
                         return i
         return -1
+
+@dataclass
+class HighestHandReleaseDetector(ReleaseDetector):
+    def detect(self, obj_frames, fps: int) -> int:
+        highest_y = float('inf')
+        release_frame = -1
+        
+        for i, obj_frame in enumerate(obj_frames):
+            for obj in obj_frame:
+                if isinstance(obj, Skeleton):
+                    y_vals = []
+                    for idx in [15, 16, 19, 20]:
+                        if idx in obj.landmarks and obj.landmarks[idx].visibility > obj.visibility_threshold:
+                            y_vals.append(obj.landmarks[idx].y)
+                    
+                    if y_vals:
+                        min_y = min(y_vals)
+                        if min_y < highest_y:
+                            highest_y = min_y
+                            release_frame = i
+                            
+        return release_frame

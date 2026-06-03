@@ -5,8 +5,7 @@ from video import Video
 from ml import YOLOFiltered, MediaPipe
 from detectors import (
     BiggestPersonThrowerDetector,
-    ActionReleaseDetector,
-    SkeletonReleaseDetector,
+    HighestHandReleaseDetector,
 )
 from pipeline import (
     extract_obj_frames,
@@ -89,7 +88,7 @@ def main():
         print("Tracked!")
 
         print("Cut object frames after release...")
-        release_detectors = [ActionReleaseDetector(), SkeletonReleaseDetector()]
+        release_detectors = [HighestHandReleaseDetector()]
         obj_frames, release_frame, release_detector_name = cut_after_release(
             obj_frames, release_detectors, video.fps
         )

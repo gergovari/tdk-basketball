@@ -9,60 +9,6 @@ from utils import ScaledInt
 from ui import HUD
 import os
 
-def split_video_into_scenes(input_path, output_dir, base_id, threshold=0.85):
-    cap = cv2.VideoCapture(input_path)
-    if not cap.isOpened():
-        return []
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-
-    scene_idx = 0
-    prev_hist = None
-    frames_in_current_scene = 0
-    min_scene_frames = int(fps)
-    valid_scenes = []
-    
-    os.makedirs(output_dir, exist_ok=True)
-    out_path = os.path.join(output_dir, f"{base_id}-{scene_idx}.mp4")
-    out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frames_in_current_scene += 1
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        hist = cv2.calcHist([hsv], [0, 1], None, [50, 60], [0, 180, 0, 256])
-        cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
-
-        if prev_hist is not None:
-            similarity = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL)
-            if similarity < threshold and frames_in_current_scene > min_scene_frames:
-                out.release()
-                valid_scenes.append(scene_idx)
-                scene_idx += 1
-                out_path = os.path.join(output_dir, f"{base_id}-{scene_idx}.mp4")
-                out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-                frames_in_current_scene = 0
-                
-        out.write(frame)
-        prev_hist = hist
-
-    out.release()
-    cap.release()
-    
-    if frames_in_current_scene > 0:
-        if frames_in_current_scene < min_scene_frames and scene_idx > 0:
-            os.remove(os.path.join(output_dir, f"{base_id}-{scene_idx}.mp4"))
-        else:
-            valid_scenes.append(scene_idx)
-            
-    return [f"{base_id}-{i}" for i in valid_scenes]
-
 def extract_obj_frames(video: Video, yolo: YOLOFiltered):
     obj_frames = [[] for x in range(len(video))]
     for i, frame in enumerate(video):
@@ -143,7 +89,7 @@ def cut_after_release(obj_frames, detectors, fps):
         return cut, earliest, earliest_detector
     return obj_frames, -1, ""
 
-def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name="", scene_num=""):
+def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name=""):
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if orig_height > 0:
         target_scale = 720.0 / orig_height
@@ -197,25 +143,6 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
             obj.draw(video, frame)
 
         hud.draw(video, frame)
-        
-        if scene_num:
-            h, w = frame.shape[:2]
-            ui_scale = h / 720.0
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.8 * ui_scale
-            thickness = max(1, int(2 * ui_scale))
-            text = f"Scene {scene_num}"
-            (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
-            
-            cv2.putText(
-                frame,
-                text,
-                (w - tw - int(20 * ui_scale), h - int(20 * ui_scale)),
-                font,
-                font_scale,
-                (255, 255, 255),
-                thickness,
-            )
 
         video.write(frame)
 

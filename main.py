@@ -4,7 +4,7 @@ from config import InputParams, YOLOParams, MediaPipeParams
 from video import Video
 from ml import YOLOFiltered, MediaPipe
 from detectors import (
-    CombinedThrowerDetector,
+    BiggestPersonThrowerDetector,
     ActionReleaseDetector,
     SkeletonReleaseDetector,
 )
@@ -64,10 +64,8 @@ def main():
         print("Enriched!")
 
         print("Find thrower...")
-        combined_detector = CombinedThrowerDetector(
-            ball_filter=ball_filter, action_filter=["jump-shot"]
-        )
-        detected_throwers = combined_detector.detect(obj_frames)
+        biggest_detector = BiggestPersonThrowerDetector(person_filter=player_filter)
+        detected_throwers = biggest_detector.detect(obj_frames)
 
         if len(detected_throwers) > 0:
             thrower_id = detected_throwers[0].id

@@ -63,6 +63,26 @@ class ActionThrowerDetector(ThrowerDetector):
         return list(throwers.keys())
 
 @dataclass
+class BiggestPersonThrowerDetector(ThrowerDetector):
+    person_filter: List[str] = field(default_factory=lambda: ["person", "player", "human"])
+
+    def detect(self, obj_frames):
+        largest_area = 0
+        biggest_obj = None
+
+        for obj_frame in obj_frames:
+            for obj in obj_frame:
+                if any(word in obj.name for word in self.person_filter) and getattr(obj, 'id', -1) != -1:
+                    area = (obj.rect.x2 - obj.rect.x1) * (obj.rect.y2 - obj.rect.y1)
+                    if area > largest_area:
+                        largest_area = area
+                        biggest_obj = obj
+
+        if biggest_obj:
+            return [biggest_obj]
+        return []
+
+@dataclass
 class CombinedThrowerDetector(ThrowerDetector):
     ball_filter: List[str] = field(default_factory=lambda: ["ball"])
     action_filter: List[str] = field(default_factory=lambda: ["jump-shot"])

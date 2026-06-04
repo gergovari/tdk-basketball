@@ -42,14 +42,15 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
 
 class ReleaseDetector(ABC):
     @abstractmethod
-    def detect(self, obj_frames, fps: int) -> int:
+    def detect(self, obj_frames, fps: int, start_idx: int = 0) -> int:
         pass
 
 
 @dataclass
 class SkeletonReleaseDetector(ReleaseDetector):
-    def detect(self, obj_frames, fps: int) -> int:
-        for i, obj_frame in enumerate(obj_frames):
+    def detect(self, obj_frames, fps: int, start_idx: int = 0) -> int:
+        for i in range(start_idx, len(obj_frames)):
+            obj_frame = obj_frames[i]
             for obj in obj_frame:
                 if isinstance(obj, Skeleton):
                     la = (
@@ -77,5 +78,42 @@ class SkeletonReleaseDetector(ReleaseDetector):
                     )
 
                     if left_shot or right_shot:
+                        return i
+        return -1
+
+
+@dataclass
+class SkeletonPrepareDetector(ReleaseDetector):
+    def detect(self, obj_frames, fps: int, start_idx: int = 0) -> int:
+        for i in range(start_idx, len(obj_frames)):
+            obj_frame = obj_frames[i]
+            for obj in obj_frame:
+                if isinstance(obj, Skeleton):
+                    la = (
+                        obj.left_knee_angle,
+                        obj.left_shoulder_angle,
+                        obj.left_elbow_angle,
+                    )
+                    ra = (
+                        obj.right_knee_angle,
+                        obj.right_shoulder_angle,
+                        obj.right_elbow_angle,
+                    )
+
+                    # Prepare phase: limbs bent. E.g., elbows < 90, knees < 160.
+                    left_prep = (
+                        all(x is not None for x in la)
+                        and la[0] < 160
+                        and la[1] < 120
+                        and la[2] < 90
+                    )
+                    right_prep = (
+                        all(x is not None for x in ra)
+                        and ra[0] < 160
+                        and ra[1] < 120
+                        and ra[2] < 90
+                    )
+
+                    if left_prep or right_prep:
                         return i
         return -1

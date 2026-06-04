@@ -6,13 +6,13 @@ from ml import YOLOFiltered, MediaPipe
 from detectors import (
     BiggestPersonThrowerDetector,
     SkeletonReleaseDetector,
+    SkeletonPrepareDetector,
 )
 from pipeline import (
     extract_obj_frames,
     only_keep_relevant_obj_frames,
     append_thrower_skeleton,
-    cut_after_release,
-    render_video,
+    render_throw_video,
     # export_skeleton_data,
 )
 
@@ -88,28 +88,61 @@ def main():
     obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe)
     print("Tracked!")
 
-    print("Cut object frames after release...")
-    release_detectors = [SkeletonReleaseDetector()]
-    obj_frames, release_frame, release_detector_name = cut_after_release(
-        obj_frames, release_detectors, video.fps
-    )
+    print("Detecting prepare-release cycles...")
+    prep_detector = SkeletonPrepareDetector()
+    rel_detector = SkeletonReleaseDetector()
 
-    if release_frame == -1:
-        print("Release not detected! Skipping...")
+    cycles = []
+    curr_frame = 0
+    prepares_found = 0
+    releases_found = 0
+
+    while curr_frame < len(obj_frames):
+        prep_frame = prep_detector.detect(obj_frames, video.fps, start_idx=curr_frame)
+        if prep_frame != -1:
+            prepares_found += 1
+        else:
+            break
+            
+        rel_frame = rel_detector.detect(obj_frames, video.fps, start_idx=prep_frame)
+        if rel_frame != -1:
+            releases_found += 1
+        else:
+            break
+
+        cycles.append((prep_frame, rel_frame))
+        curr_frame = rel_frame + 1
+
+    print(f"Found {prepares_found} prepares and {releases_found} releases, resulting in {len(cycles)} full cycles!")
+
+    if not cycles:
+        print("No prepare-release cycles detected! Skipping...")
         video.release()
         if os.path.exists(params["output_video_path"]):
             os.remove(params["output_video_path"])
-    print("Cut!")
-
-    # print(f"Exporting skeleton data to {params.output_data_path}...")
-    # export_skeleton_data(obj_frames, params.output_data_path, video.fps, release_frame)
-    # print("Exported!")
-
-    print(f"Writing out to {params['output_video_path']}...")
-    render_video(video, obj_frames, release_frame, release_detector_name)
-    print("Wrote!")
+        return
 
     video.release()
+    if os.path.exists(params["output_video_path"]):
+        os.remove(params["output_video_path"])
+
+    print("Rendering isolated throws...")
+    for cycle_idx, (prep_frame, rel_frame) in enumerate(cycles):
+        throw_num = cycle_idx + 1
+        out_path = os.path.join(args.output_path, f"{base_video_id}-{throw_num}.mp4")
+        print(f"Writing out to {out_path} (frames {prep_frame} to {rel_frame})...")
+        render_throw_video(
+            params["input_video_path"], 
+            out_path, 
+            obj_frames, 
+            prep_frame, 
+            rel_frame, 
+            rel_frame, 
+            release_detector_name=rel_detector.__class__.__name__, 
+            fps=video.fps
+        )
+        print(f"Wrote throw {throw_num}!")
+
     print(f"Finished {base_video_id}\n")
 
     print("All done!")

@@ -138,7 +138,6 @@ def main():
             prep_frame, 
             rel_frame, 
             rel_frame, 
-            release_detector_name=rel_detector.__class__.__name__, 
             fps=video.fps
         )
         print(f"Wrote throw {throw_num}!")

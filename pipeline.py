@@ -33,7 +33,10 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
         filtered_obj_frames.append(filtered_frame)
     return filtered_obj_frames
 
+import math
+
 def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe):
+    last_valid_skeleton = None
     for i, frame in enumerate(video):
         current_thrower = next(
             (obj for obj in obj_frames[i] if obj.id == thrower_id), None
@@ -67,7 +70,35 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe):
                         landmarks=extracted_landmarks,
                         detection_scale=video.scale,
                     )
-                    obj_frames[i].append(thrower_skeleton)
+
+                    is_valid = True
+                    if last_valid_skeleton is not None:
+                        total_dist = 0
+                        count = 0
+                        for idx, lm in thrower_skeleton.landmarks.items():
+                            if idx in last_valid_skeleton.landmarks:
+                                old_lm = last_valid_skeleton.landmarks[idx]
+                                total_dist += math.hypot(lm.x - old_lm.x, lm.y - old_lm.y)
+                                count += 1
+                        
+                        if count > 0:
+                            avg_dist = total_dist / count
+                            if avg_dist > 25 * video.scale:
+                                is_valid = False
+                    
+                    if is_valid:
+                        obj_frames[i].append(thrower_skeleton)
+                        last_valid_skeleton = thrower_skeleton
+                    else:
+                        print(f"Skeleton correction applied at frame {i} (moved unrealistically: {avg_dist:.2f}px)")
+                        obj_frames[i].append(last_valid_skeleton)
+                elif last_valid_skeleton is not None:
+                    print(f"Skeleton correction applied at frame {i} (no landmarks detected)")
+                    obj_frames[i].append(last_valid_skeleton)
+        elif last_valid_skeleton is not None:
+            print(f"Skeleton correction applied at frame {i} (thrower missing)")
+            obj_frames[i].append(last_valid_skeleton)
+
     return obj_frames
 
 def cut_after_release(obj_frames, detectors, fps):
@@ -146,7 +177,7 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
 
         video.write(frame)
 
-def render_throw_video(input_video_path, output_video_path, obj_frames, start_frame, end_frame, release_frame, release_detector_name="", fps=None):
+def render_throw_video(input_video_path, output_video_path, obj_frames, start_frame, end_frame, release_frame, fps=None):
     video = Video(input_video_path, output_video_path)
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if orig_height > 0:
@@ -159,8 +190,6 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
         fps = video.fps
 
     last_valid_frame = None
-    last_active_side = "Unknown"
-    last_angles = {"ls": None, "le": None, "lk": None, "rs": None, "re": None, "rk": None}
     
     total_frames = (end_frame - start_frame + 1)
     
@@ -177,36 +206,6 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
                 frame = last_valid_frame.copy()
             else:
                 continue
-
-        obj_frame = obj_frames[frame_idx] if frame_idx < len(obj_frames) else []
-        skel = next((obj for obj in obj_frame if isinstance(obj, Skeleton)), None)
-        is_released = frame_idx >= release_frame
-        
-        if skel:
-            if 15 in skel.landmarks and 16 in skel.landmarks:
-                if skel.landmarks[16].y < skel.landmarks[15].y:
-                    last_active_side = "Right"
-                else:
-                    last_active_side = "Left"
-            if skel.left_shoulder_angle is not None: last_angles["ls"] = skel.left_shoulder_angle
-            if skel.left_elbow_angle is not None: last_angles["le"] = skel.left_elbow_angle
-            if skel.left_knee_angle is not None: last_angles["lk"] = skel.left_knee_angle
-            if skel.right_shoulder_angle is not None: last_angles["rs"] = skel.right_shoulder_angle
-            if skel.right_elbow_angle is not None: last_angles["re"] = skel.right_elbow_angle
-            if skel.right_knee_angle is not None: last_angles["rk"] = skel.right_knee_angle
-            
-        hud = HUD(
-            skeleton=skel, 
-            released=is_released, 
-            detector_name=release_detector_name,
-            active_side=last_active_side,
-            angles=last_angles
-        )
-
-        for obj in obj_frame:
-            obj.draw(video, frame)
-
-        hud.draw(video, frame)
 
         video.write(frame)
 

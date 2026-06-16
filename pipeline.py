@@ -10,9 +10,13 @@ from ui import HUD
 import os
 
 def extract_obj_frames(video: Video, yolo: YOLOFiltered):
-    obj_frames = [[] for x in range(len(video))]
+    total_frames = len(video)
+    obj_frames = [[] for x in range(total_frames)]
     for i, frame in enumerate(video):
+        if i % 5 == 0 or i == total_frames - 1:
+            print(f"\rExtracting frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%)", end="", flush=True)
         obj_frames[i].extend(yolo.track(video, frame))
+    print()
     return obj_frames
 
 def enrich_player_with_action(player_filter: List[str], obj_frames):
@@ -37,10 +41,41 @@ import math
 
 def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe):
     last_valid_skeleton = None
+    total_frames = len(video)
+    
+    # Calculate the "usual spot" by finding the median center of the thrower
+    thrower_centers = []
+    for frame_objs in obj_frames:
+        for obj in frame_objs:
+            if obj.id == thrower_id:
+                cx = (obj.rect.x1 + obj.rect.x2) / 2
+                cy = (obj.rect.y1 + obj.rect.y2) / 2
+                thrower_centers.append((cx, cy))
+                
+    usual_spot = None
+    if thrower_centers:
+        thrower_centers.sort(key=lambda p: p[0])
+        median_x = thrower_centers[len(thrower_centers)//2][0]
+        thrower_centers.sort(key=lambda p: p[1])
+        median_y = thrower_centers[len(thrower_centers)//2][1]
+        usual_spot = (median_x, median_y)
+        
     for i, frame in enumerate(video):
+        if i % 5 == 0 or i == total_frames - 1:
+            print(f"\rTracking skeleton {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%)", end="", flush=True)
+            
         current_thrower = next(
             (obj for obj in obj_frames[i] if obj.id == thrower_id), None
         )
+
+        # Stop tracking if they move too far from the usual spot
+        if current_thrower is not None and usual_spot is not None:
+            cx = (current_thrower.rect.x1 + current_thrower.rect.x2) / 2
+            cy = (current_thrower.rect.y1 + current_thrower.rect.y2) / 2
+            dist_from_usual = math.hypot(cx - usual_spot[0], cy - usual_spot[1])
+            if dist_from_usual > video.size[0] * 0.15:
+                current_thrower = None
+                last_valid_skeleton = None
 
         if current_thrower is not None:
             rect = current_thrower.rect.with_padding(
@@ -85,20 +120,25 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe):
                             avg_dist = total_dist / count
                             if avg_dist > 25 * video.scale:
                                 is_valid = False
-                    
+                        
                     if is_valid:
                         obj_frames[i].append(thrower_skeleton)
                         last_valid_skeleton = thrower_skeleton
                     else:
-                        print(f"Skeleton correction applied at frame {i} (moved unrealistically: {avg_dist:.2f}px)")
-                        obj_frames[i].append(last_valid_skeleton)
+                        print(f"\nSkeleton correction applied at frame {i} (moved unrealistically: {avg_dist:.2f}px)")
+                        cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
+                        obj_frames[i].append(cached_skel)
                 elif last_valid_skeleton is not None:
-                    print(f"Skeleton correction applied at frame {i} (no landmarks detected)")
-                    obj_frames[i].append(last_valid_skeleton)
+                    # print(f"\nSkeleton correction applied at frame {i} (no landmarks detected)")
+                    cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
+                    obj_frames[i].append(cached_skel)
         elif last_valid_skeleton is not None:
-            print(f"Skeleton correction applied at frame {i} (thrower missing)")
-            obj_frames[i].append(last_valid_skeleton)
+            # Uncomment the print below if debugging missing throwers
+            # print(f"\nSkeleton correction applied at frame {i} (thrower missing)")
+            cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
+            obj_frames[i].append(cached_skel)
 
+    print() # Newline after progress finishes
     return obj_frames
 
 def cut_after_release(obj_frames, detectors, fps):
@@ -177,7 +217,7 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
 
         video.write(frame)
 
-def render_throw_video(input_video_path, output_video_path, obj_frames, start_frame, end_frame, release_frame, fps=None):
+def render_throw_video(input_video_path, output_video_path, obj_frames, start_frame, end_frame, release_frame, fps=None, enable_hud=False, valid_frames=None, cycles=None):
     video = Video(input_video_path, output_video_path)
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if orig_height > 0:
@@ -190,13 +230,21 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
         fps = video.fps
 
     last_valid_frame = None
+    last_active_side = "Unknown"
+    last_angles = {"ls": None, "le": None, "lk": None, "rs": None, "re": None, "rk": None}
     
     total_frames = (end_frame - start_frame + 1)
     
     for i in range(total_frames):
+        if i % 5 == 0 or i == total_frames - 1:
+            print(f"\rRendering frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%)", end="", flush=True)
+            
         frame_idx = start_frame + i
-        if frame_idx > release_frame:
+        if release_frame != -1 and frame_idx > release_frame:
             frame_idx = release_frame
+            
+        if valid_frames is not None and frame_idx not in valid_frames:
+            continue
             
         try:
             frame = video[frame_idx].copy()
@@ -207,8 +255,49 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
             else:
                 continue
 
+        if enable_hud:
+            skel = next((obj for obj in obj_frames[frame_idx] if isinstance(obj, Skeleton)), None)
+            is_released = release_frame != -1 and frame_idx >= release_frame
+            status_text = ""
+            
+            if skel:
+                if 15 in skel.landmarks and 16 in skel.landmarks:
+                    if skel.landmarks[16].y < skel.landmarks[15].y:
+                        last_active_side = "Right"
+                    else:
+                        last_active_side = "Left"
+                if skel.left_shoulder_angle is not None: last_angles["ls"] = skel.left_shoulder_angle
+                if skel.left_elbow_angle is not None: last_angles["le"] = skel.left_elbow_angle
+                if skel.left_knee_angle is not None: last_angles["lk"] = skel.left_knee_angle
+                if skel.right_shoulder_angle is not None: last_angles["rs"] = skel.right_shoulder_angle
+                if skel.right_elbow_angle is not None: last_angles["re"] = skel.right_elbow_angle
+                if skel.right_knee_angle is not None: last_angles["rk"] = skel.right_knee_angle
+
+            if cycles is not None:
+                for prep, rel in cycles:
+                    if prep <= frame_idx < rel:
+                        status_text = "PREPARE"
+                    elif frame_idx == rel:
+                        status_text = "RELEASE"
+            elif is_released:
+                status_text = "RELEASED"
+                
+            hud = HUD(
+                skeleton=skel, 
+                status_text=status_text, 
+                detector_name="SkeletonReleaseDetector" if status_text else "",
+                active_side=last_active_side,
+                angles=last_angles
+            )
+
+            for obj in obj_frames[frame_idx]:
+                obj.draw(video, frame)
+
+            hud.draw(video, frame)
+
         video.write(frame)
 
+    print() # Newline after progress finishes
     video.release()
 
 def export_skeleton_data(obj_frames, output_path, fps, release_frame):

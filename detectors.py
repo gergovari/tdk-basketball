@@ -6,7 +6,7 @@ from entities import Skeleton
 
 class ThrowerDetector(ABC):
     @abstractmethod
-    def detect(self, obj_frames):
+    def detect(self, obj_frames, video_size=None):
         pass
 
 
@@ -20,24 +20,108 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
         default_factory=lambda: ["person", "player", "human"]
     )
 
-    def detect(self, obj_frames):
-        largest_area = 0
-        biggest_obj = None
+    def detect(self, obj_frames, video_size=None):
+        # We will build tracks based on Euclidean distance of centers
+        tracks = [] # Each track: {'frames': {frame_idx: obj}, 'last_frame': idx, 'last_center': (cx, cy)}
+        
+        if video_size is not None:
+            max_dist = video_size[0] * 0.15
+        else:
+            max_dist = 200 # Maximum allowed pixel distance between frames to match tracks
+        
+        for i, obj_frame in enumerate(obj_frames):
+            persons = [obj for obj in obj_frame if any(word in obj.name for word in self.person_filter)]
+            
+            available_tracks = [t for t in tracks if i not in t['frames']]
+            pairs = []
+            
+            for p_idx, person in enumerate(persons):
+                cx = (person.rect.x1 + person.rect.x2) / 2
+                cy = (person.rect.y1 + person.rect.y2) / 2
+                
+                for t_idx, track in enumerate(available_tracks):
+                    tcx, tcy = track['last_center']
+                    dist = ((cx - tcx)**2 + (cy - tcy)**2)**0.5
+                    if dist < max_dist:
+                        pairs.append((dist, p_idx, t_idx))
+                        
+            pairs.sort(key=lambda x: x[0])
+            used_persons = set()
+            used_tracks = set()
+            
+            for dist, p_idx, t_idx in pairs:
+                if p_idx in used_persons or t_idx in used_tracks:
+                    continue
+                    
+                track = available_tracks[t_idx]
+                person = persons[p_idx]
+                cx = (person.rect.x1 + person.rect.x2) / 2
+                cy = (person.rect.y1 + person.rect.y2) / 2
+                
+                track['frames'][i] = person
+                track['last_frame'] = i
+                track['last_center'] = (cx, cy)
+                
+                used_persons.add(p_idx)
+                used_tracks.add(t_idx)
+                
+            for p_idx, person in enumerate(persons):
+                if p_idx not in used_persons:
+                    cx = (person.rect.x1 + person.rect.x2) / 2
+                    cy = (person.rect.y1 + person.rect.y2) / 2
+                    tracks.append({
+                        'frames': {i: person},
+                        'last_frame': i,
+                        'last_center': (cx, cy)
+                    })
+                    
+        if not tracks:
+            return []
+            
+        best_track = max(tracks, key=lambda t: len(t['frames']))
+        
+        b_centers = []
+        for obj in best_track['frames'].values():
+            b_centers.append(((obj.rect.x1 + obj.rect.x2) / 2, (obj.rect.y1 + obj.rect.y2) / 2))
+            
+        b_centers.sort(key=lambda p: p[0])
+        best_median_x = b_centers[len(b_centers)//2][0]
+        b_centers.sort(key=lambda p: p[1])
+        best_median_y = b_centers[len(b_centers)//2][1]
+        
+        for track in tracks:
+            if track is best_track:
+                continue
+                
+            near_frames = 0
+            for obj in track['frames'].values():
+                cx = (obj.rect.x1 + obj.rect.x2) / 2
+                cy = (obj.rect.y1 + obj.rect.y2) / 2
+                dist = ((best_median_x - cx)**2 + (best_median_y - cy)**2)**0.5
+                if dist < max_dist:
+                    near_frames += 1
+                    
+            first_obj = next(iter(track['frames'].values()))
+            first_cx = (first_obj.rect.x1 + first_obj.rect.x2) / 2
+            first_cy = (first_obj.rect.y1 + first_obj.rect.y2) / 2
+            dist_start = ((best_median_x - first_cx)**2 + (best_median_y - first_cy)**2)**0.5
+            
+            last_obj = list(track['frames'].values())[-1]
+            last_cx = (last_obj.rect.x1 + last_obj.rect.x2) / 2
+            last_cy = (last_obj.rect.y1 + last_obj.rect.y2) / 2
+            dist_end = ((best_median_x - last_cx)**2 + (best_median_y - last_cy)**2)**0.5
+                    
+            if (near_frames / len(track['frames']) > 0.3) or (dist_start < max_dist) or (dist_end < max_dist):
+                best_track['frames'].update(track['frames'])
 
-        for obj_frame in obj_frames:
-            for obj in obj_frame:
-                if (
-                    any(word in obj.name for word in self.person_filter)
-                    and getattr(obj, "id", -1) != -1
-                ):
-                    area = (obj.rect.x2 - obj.rect.x1) * (obj.rect.y2 - obj.rect.y1)
-                    if area > largest_area:
-                        largest_area = area
-                        biggest_obj = obj
-
-        if biggest_obj:
-            return [biggest_obj]
-        return []
+        unified_id = 99999
+        
+        # Override the id of the thrower object in every frame it appears
+        for frame_idx, obj in best_track['frames'].items():
+            obj.id = unified_id
+            
+        dummy = next(iter(best_track['frames'].values()))
+        return [dummy]
 
 
 class ReleaseDetector(ABC):
@@ -117,3 +201,48 @@ class SkeletonPrepareDetector(ReleaseDetector):
                     if left_prep or right_prep:
                         return i
         return -1
+
+    def detect_backward(self, obj_frames, fps: int, start_idx: int, end_idx: int) -> int:
+        min_angle = 180
+        min_frame = -1
+        
+        # Search backwards from the release frame (end_idx) to start_idx
+        for i in range(end_idx, start_idx - 1, -1):
+            obj_frame = obj_frames[i]
+            for obj in obj_frame:
+                if isinstance(obj, Skeleton):
+                    la = (
+                        obj.left_knee_angle,
+                        obj.left_shoulder_angle,
+                        obj.left_elbow_angle,
+                    )
+                    ra = (
+                        obj.right_knee_angle,
+                        obj.right_shoulder_angle,
+                        obj.right_elbow_angle,
+                    )
+
+                    left_prep = (
+                        all(x is not None for x in la)
+                        and la[0] < 160
+                        and la[1] < 120
+                        and la[2] < 90
+                    )
+                    right_prep = (
+                        all(x is not None for x in ra)
+                        and ra[0] < 160
+                        and ra[1] < 120
+                        and ra[2] < 90
+                    )
+
+                    if left_prep or right_prep:
+                        angle = la[2] if left_prep else ra[2]
+                        if angle < min_angle:
+                            min_angle = angle
+                            min_frame = i
+                    elif min_frame != -1:
+                        # We were in a prepare phase (going backward) and just exited it.
+                        # This means we found the full peak flexion for this shot.
+                        return min_frame
+
+        return min_frame

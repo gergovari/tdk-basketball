@@ -170,6 +170,7 @@ class Skeleton(Drawable):
     landmarks: Dict[int, Landmark]
     visibility_threshold: float = 0
     detection_scale: float = 1.0
+    is_cached: bool = False
 
     def calculate_angle(self, a_idx, b_idx, c_idx):
         if (
@@ -221,8 +222,12 @@ class Skeleton(Drawable):
         draw_ratio = video.scale / self.detection_scale
         radius = max(2, int(2 * ui_scale))
         bone_thickness = max(1, int(1 * ui_scale))
-        bone_color = (255, 255, 255)
-        joint_color = (0, 255, 0)
+        if self.is_cached:
+            bone_color = (0, 0, 255) # Red
+            joint_color = (0, 0, 255) # Red
+        else:
+            bone_color = (255, 255, 255)
+            joint_color = (0, 255, 0)
 
         for connection in POSE_CONNECTIONS:
             idx1, idx2 = connection

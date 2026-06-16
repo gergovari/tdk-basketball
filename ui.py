@@ -6,7 +6,7 @@ from video import Video
 @dataclass
 class HUD(Drawable):
     skeleton: Skeleton
-    released: bool = False
+    status_text: str = ""
     detector_name: str = ""
     active_side: str = "Unknown"
     angles: dict = None
@@ -98,8 +98,8 @@ class HUD(Drawable):
                 y_offset,
             )
 
-        if self.released:
-            text = "RELEASED"
+        if self.status_text:
+            text = self.status_text
             (tw, th), _ = cv2.getTextSize(
                 text,
                 cv2.FONT_HERSHEY_SIMPLEX,

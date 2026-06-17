@@ -39,7 +39,7 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
 
 import math
 
-def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=25.0):
+def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=40.0):
     last_valid_skeleton = None
     total_frames = len(video)
     
@@ -107,6 +107,7 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
                     )
 
                     is_valid = True
+                    invalidation_reason = ""
                     if last_valid_skeleton is not None:
                         total_dist = 0
                         count = 0
@@ -118,14 +119,49 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
                         
                         if count > 0:
                             avg_dist = total_dist / count
-                            if avg_dist > max_movement * video.scale:
-                                is_valid = False
+                            
+                            curr_xs = [lm.x for lm in thrower_skeleton.landmarks.values()]
+                            curr_ys = [lm.y for lm in thrower_skeleton.landmarks.values()]
+                            old_xs = [lm.x for lm in last_valid_skeleton.landmarks.values()]
+                            old_ys = [lm.y for lm in last_valid_skeleton.landmarks.values()]
+                            
+                            if curr_xs and old_xs:
+                                curr_width = max(curr_xs) - min(curr_xs)
+                                curr_height = max(curr_ys) - min(curr_ys)
+                                old_width = max(old_xs) - min(old_xs)
+                                old_height = max(old_ys) - min(old_ys)
+                                
+                                if old_height > 0 and old_width > 0:
+                                    curr_area = curr_width * curr_height
+                                    old_area = old_width * old_height
+                                    area_ratio = curr_area / old_area
+                                    
+                                    # 1. Scale-invariant Area Check (Resolution independent)
+                                    if area_ratio > 1.8 or area_ratio < 0.55:
+                                        is_valid = False
+                                        invalidation_reason = f"Area jump ({area_ratio:.2f}x)"
+                                        
+                                    # 2. Dynamic Movement Threshold (scaled to the thrower's true pixel height)
+                                    size_multiplier = old_height / 300.0
+                                    dynamic_max_movement = max_movement * size_multiplier
+                                    
+                                    if is_valid and avg_dist > dynamic_max_movement:
+                                        is_valid = False
+                                        invalidation_reason = f"Moved {avg_dist:.1f}px (Limit: {dynamic_max_movement:.1f}px)"
+                                else:
+                                    if avg_dist > max_movement * video.scale:
+                                        is_valid = False
+                                        invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
+                            else:
+                                if avg_dist > max_movement * video.scale:
+                                    is_valid = False
+                                    invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
                         
                     if is_valid:
                         obj_frames[i].append(thrower_skeleton)
                         last_valid_skeleton = thrower_skeleton
                     else:
-                        print(f"\nSkeleton correction applied at frame {i} (moved unrealistically: {avg_dist:.2f}px)")
+                        print(f"\nSkeleton correction applied at frame {i} ({invalidation_reason})")
                         cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
                         obj_frames[i].append(cached_skel)
                 elif last_valid_skeleton is not None:

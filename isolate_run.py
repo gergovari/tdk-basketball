@@ -262,7 +262,7 @@ def main():
         "--full-debug-video", action="store_true", help="Always render the full run video with HUD overlays for debugging"
     )
     parser.add_argument(
-        "--max-movement", type=float, default=25.0, help="Maximum allowed skeleton movement per frame in scaled pixels"
+        "--max-movement", type=float, default=40.0, help="Maximum allowed skeleton movement per frame in scaled pixels"
     )
     parser.add_argument(
         "--output-height", type=float, default=720.0, help="Target height for the output videos"

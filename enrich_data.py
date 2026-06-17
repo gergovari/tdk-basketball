@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--always-split", action="store_true", help="Always output individual throw videos, ignoring the exactly-5 rule")
     parser.add_argument("--full-debug-video", action="store_true", help="Always render the full run video with HUD overlays for debugging")
     parser.add_argument("--max-movement", type=float, default=60.0, help="Maximum allowed skeleton movement per frame in scaled pixels")
+    parser.add_argument("--max-throws", type=int, default=None, help="Maximum number of throws to detect per video (default: unlimited)")
     parser.add_argument("--pose-backend", choices=["mediapipe", "yolo"], default="yolo", help="Pose estimation backend: 'mediapipe' (CPU) or 'yolo' (GPU, faster)")
     parser.add_argument("--enable-invalidation", action="store_true", help="Enable skeleton invalidation logic (defaults to False)")
     parser.add_argument("--output-height", type=float, default=720.0, help="Target height for the output videos")
@@ -99,7 +100,8 @@ def main():
             max_movement=args.max_movement,
             output_height=args.output_height,
             enable_invalidation=args.enable_invalidation,
-            visualize=args.visualize
+            visualize=args.visualize,
+            max_throws=args.max_throws
         )
 
     print("==================================================")

@@ -20,7 +20,7 @@ import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False):
+def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None):
     base_video_id = os.path.splitext(os.path.basename(input_video_path))[0]
 
     print(f"--- Processing Video: {base_video_id} ---")
@@ -115,6 +115,8 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
     releases_found = 0
 
     while curr_frame <= last_thrower_frame:
+        if max_throws is not None and len(cycles) >= max_throws:
+            break
         # 1. Search forward to find any prepare phase (this naturally skips the previous shot's follow-through)
         prep_forward = prep_detector.detect(obj_frames, video.fps, start_idx=curr_frame)
         if prep_forward == -1:
@@ -268,10 +270,13 @@ def main():
         "--enable-invalidation", action="store_true", help="Enable skeleton invalidation logic (defaults to False)"
     )
     parser.add_argument(
-        "--max-movement", type=float, default=60.0, help="Maximum allowed skeleton movement per frame in scaled pixels"
+        '--max-movement', type=float, default=60.0, help="Maximum allowed skeleton movement per frame in scaled pixels"
     )
     parser.add_argument(
-        "--pose-backend", choices=["mediapipe", "yolo"], default="yolo", help="Pose estimation backend: 'mediapipe' (CPU) or 'yolo' (GPU, faster)"
+        '--max-throws', type=int, default=None, help="Maximum number of throws to detect per video (default: unlimited)"
+    )
+    parser.add_argument(
+        '--pose-backend', choices=["mediapipe", "yolo"], default="yolo", help="Pose estimation backend: 'mediapipe' (CPU) or 'yolo' (GPU, faster)"
     )
     parser.add_argument(
         "--output-height", type=float, default=720.0, help="Target height for the output videos"
@@ -301,7 +306,7 @@ def main():
         print(f"Pose backend: MediaPipe (CPU)")
     print("Models loaded!\n")
 
-    process_video(args.video, args.output_path, yolo_filtered, pose_model, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation)
+    process_video(args.video, args.output_path, yolo_filtered, pose_model, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws)
     print("All done!")
 
 

@@ -162,8 +162,8 @@ class SkeletonReleaseDetector(ReleaseDetector):
         max_angle = -1
         max_frame = -1
         
-        # We need the elbow to at least extend to 140 to consider it a real throw
-        min_required_extension = 140 
+        # We need the elbow to at least extend to 120 to consider it a real throw
+        min_required_extension = 120 
         
         for i in range(start_idx, len(obj_frames)):
             obj_frame = obj_frames[i]

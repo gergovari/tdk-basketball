@@ -21,8 +21,8 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
     )
 
     def detect(self, obj_frames, video_size=None):
-        # We will build tracks based on Euclidean distance of centers
-        tracks = [] # Each track: {'frames': {frame_idx: obj}, 'last_frame': idx, 'last_center': (cx, cy)}
+        # We will build tracks based on Euclidean distance of centers and area similarity
+        tracks = [] # Each track: {'frames': {frame_idx: obj}, 'last_frame': idx, 'last_center': (cx, cy), 'avg_area': float}
         
         if video_size is not None:
             max_dist = video_size[0] * 0.15
@@ -38,12 +38,15 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
             for p_idx, person in enumerate(persons):
                 cx = (person.rect.x1 + person.rect.x2) / 2
                 cy = (person.rect.y1 + person.rect.y2) / 2
+                area = (person.rect.x2 - person.rect.x1) * (person.rect.y2 - person.rect.y1)
                 
                 for t_idx, track in enumerate(available_tracks):
                     tcx, tcy = track['last_center']
                     dist = ((cx - tcx)**2 + (cy - tcy)**2)**0.5
                     if dist < max_dist:
-                        pairs.append((dist, p_idx, t_idx))
+                        area_ratio = max(area / track['avg_area'], track['avg_area'] / area) if track['avg_area'] > 0 else 1.0
+                        score = dist + (area_ratio - 1.0) * max_dist
+                        pairs.append((score, p_idx, t_idx))
                         
             pairs.sort(key=lambda x: x[0])
             used_persons = set()
@@ -57,10 +60,13 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
                 person = persons[p_idx]
                 cx = (person.rect.x1 + person.rect.x2) / 2
                 cy = (person.rect.y1 + person.rect.y2) / 2
+                area = (person.rect.x2 - person.rect.x1) * (person.rect.y2 - person.rect.y1)
                 
                 track['frames'][i] = person
                 track['last_frame'] = i
                 track['last_center'] = (cx, cy)
+                n = len(track['frames'])
+                track['avg_area'] = (track['avg_area'] * (n - 1) + area) / n
                 
                 used_persons.add(p_idx)
                 used_tracks.add(t_idx)
@@ -69,10 +75,12 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
                 if p_idx not in used_persons:
                     cx = (person.rect.x1 + person.rect.x2) / 2
                     cy = (person.rect.y1 + person.rect.y2) / 2
+                    area = (person.rect.x2 - person.rect.x1) * (person.rect.y2 - person.rect.y1)
                     tracks.append({
                         'frames': {i: person},
                         'last_frame': i,
-                        'last_center': (cx, cy)
+                        'last_center': (cx, cy),
+                        'avg_area': area
                     })
                     
         if not tracks:
@@ -138,7 +146,12 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
             dist_end = ((best_median_x - last_cx)**2 + (best_median_y - last_cy)**2)**0.5
                     
             if (near_frames / len(track['frames']) > 0.3) or (dist_start < max_dist) or (dist_end < max_dist):
-                best_track['frames'].update(track['frames'])
+                if track['avg_area'] > 0 and best_track['avg_area'] > 0:
+                    area_ratio = max(track['avg_area'] / best_track['avg_area'], best_track['avg_area'] / track['avg_area'])
+                    if area_ratio < 1.5:
+                        best_track['frames'].update(track['frames'])
+                else:
+                    best_track['frames'].update(track['frames'])
 
         unified_id = 99999
         

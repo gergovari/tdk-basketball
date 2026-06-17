@@ -1,4 +1,6 @@
 *data/*
+olddata*/
 __pycache__/*
 *.cpython-*
 *.mp4
+cleaneddata*/

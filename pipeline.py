@@ -78,9 +78,55 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
 
 import math
 
+def _run_pose_on_crop(frame, rect, mediapipe, timestamp_ms, video_scale):
+    """Run pose estimation on a crop region and return (Skeleton, rect_used) or (None, None)."""
+    from entities import Skeleton, Landmark
+    thrower_crop = frame[max(0, rect.y1) : rect.y2, max(0, rect.x1) : rect.x2]
+    crop_h, crop_w = thrower_crop.shape[:2]
+    if crop_h <= 0 or crop_w <= 0:
+        return None, None
+
+    max_crop_h = 480
+    if crop_h > max_crop_h:
+        scale_factor = max_crop_h / crop_h
+        small_crop = cv2.resize(thrower_crop, (int(crop_w * scale_factor), max_crop_h))
+        small_h, small_w = small_crop.shape[:2]
+    else:
+        small_crop = thrower_crop
+        small_h, small_w = crop_h, crop_w
+        scale_factor = 1.0
+
+    detection_result = mediapipe.detect(small_crop, timestamp_ms)
+
+    if not detection_result.pose_landmarks:
+        return None, None
+
+    pose_landmarks = detection_result.pose_landmarks[0]
+    extracted_landmarks = {}
+
+    for idx, lm in enumerate(pose_landmarks):
+        if lm is None:
+            continue
+        crop_x_px = lm.x * small_w / scale_factor
+        crop_y_px = lm.y * small_h / scale_factor
+        full_x_px = int(crop_x_px + rect.x1)
+        full_y_px = int(crop_y_px + rect.y1)
+
+        extracted_landmarks[idx] = Landmark(
+            x=full_x_px, y=full_y_px, visibility=lm.visibility
+        )
+
+    skeleton = Skeleton(
+        landmarks=extracted_landmarks,
+        detection_scale=video_scale,
+    )
+    return skeleton, rect
+
+
 def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=60.0, visualize=False, enable_invalidation=False):
     mediapipe.reset()  # Reinitialize for this video (timestamps must start fresh)
     last_valid_skeleton = None
+    last_known_rect = None  # Remember the last YOLO bounding box for fallback
     total_frames = len(video)
     fps = video.fps or 30
     import time
@@ -131,115 +177,92 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
                 current_thrower = None
                 last_valid_skeleton = None
 
+        # Determine the crop region: YOLO box if available, else last known box
         if current_thrower is not None:
             rect = current_thrower.rect.with_padding(
                 ScaledInt(60, (1280, 720), video.size).value
             )
-            thrower_crop = frame[max(0, rect.y1) : rect.y2, max(0, rect.x1) : rect.x2]
+            last_known_rect = rect  # Remember for fallback
+            source = "yolo"
+        elif last_known_rect is not None:
+            # YOLO lost the thrower, but the thrower doesn't move — reuse last box
+            rect = last_known_rect
+            source = "fallback"
+        else:
+            rect = None
+            source = None
 
-            crop_h, crop_w = thrower_crop.shape[:2]
-            if crop_h > 0 and crop_w > 0:
-                # Cap crop size for MediaPipe — pose model doesn't benefit from huge crops
-                max_crop_h = 480
-                if crop_h > max_crop_h:
-                    scale_factor = max_crop_h / crop_h
-                    small_crop = cv2.resize(thrower_crop, (int(crop_w * scale_factor), max_crop_h))
-                    small_h, small_w = small_crop.shape[:2]
-                else:
-                    small_crop = thrower_crop
-                    small_h, small_w = crop_h, crop_w
-                    scale_factor = 1.0
+        if rect is not None:
+            timestamp_ms = int(i * 1000 / fps)
+            thrower_skeleton, _ = _run_pose_on_crop(
+                frame, rect, mediapipe, timestamp_ms, video.scale
+            )
 
-                timestamp_ms = int(i * 1000 / fps)
-                detection_result = mediapipe.detect(small_crop, timestamp_ms)
-
-                if detection_result.pose_landmarks:
-                    pose_landmarks = detection_result.pose_landmarks[0]
-                    extracted_landmarks = {}
-
-                    for idx, lm in enumerate(pose_landmarks):
-                        if lm is None:
-                            continue
-                        # Scale back from small crop to original crop coordinates
-                        crop_x_px = lm.x * small_w / scale_factor
-                        crop_y_px = lm.y * small_h / scale_factor
-                        full_x_px = int(crop_x_px + rect.x1)
-                        full_y_px = int(crop_y_px + rect.y1)
-
-                        extracted_landmarks[idx] = Landmark(
-                            x=full_x_px, y=full_y_px, visibility=lm.visibility
-                        )
-
-                    thrower_skeleton = Skeleton(
-                        landmarks=extracted_landmarks,
-                        detection_scale=video.scale,
-                    )
-
-                    is_valid = True
-                    invalidation_reason = ""
-                    if enable_invalidation and last_valid_skeleton is not None:
-                        total_dist = 0
-                        count = 0
-                        for idx, lm in thrower_skeleton.landmarks.items():
-                            if idx in last_valid_skeleton.landmarks:
-                                old_lm = last_valid_skeleton.landmarks[idx]
-                                total_dist += math.hypot(lm.x - old_lm.x, lm.y - old_lm.y)
-                                count += 1
+            if thrower_skeleton is not None:
+                is_valid = True
+                invalidation_reason = ""
+                if enable_invalidation and last_valid_skeleton is not None:
+                    total_dist = 0
+                    count = 0
+                    for idx, lm in thrower_skeleton.landmarks.items():
+                        if idx in last_valid_skeleton.landmarks:
+                            old_lm = last_valid_skeleton.landmarks[idx]
+                            total_dist += math.hypot(lm.x - old_lm.x, lm.y - old_lm.y)
+                            count += 1
+                    
+                    if count > 0:
+                        avg_dist = total_dist / count
                         
-                        if count > 0:
-                            avg_dist = total_dist / count
+                        curr_xs = [lm.x for lm in thrower_skeleton.landmarks.values()]
+                        curr_ys = [lm.y for lm in thrower_skeleton.landmarks.values()]
+                        old_xs = [lm.x for lm in last_valid_skeleton.landmarks.values()]
+                        old_ys = [lm.y for lm in last_valid_skeleton.landmarks.values()]
+                        
+                        if curr_xs and old_xs:
+                            curr_width = max(curr_xs) - min(curr_xs)
+                            curr_height = max(curr_ys) - min(curr_ys)
+                            old_width = max(old_xs) - min(old_xs)
+                            old_height = max(old_ys) - min(old_ys)
                             
-                            curr_xs = [lm.x for lm in thrower_skeleton.landmarks.values()]
-                            curr_ys = [lm.y for lm in thrower_skeleton.landmarks.values()]
-                            old_xs = [lm.x for lm in last_valid_skeleton.landmarks.values()]
-                            old_ys = [lm.y for lm in last_valid_skeleton.landmarks.values()]
-                            
-                            if curr_xs and old_xs:
-                                curr_width = max(curr_xs) - min(curr_xs)
-                                curr_height = max(curr_ys) - min(curr_ys)
-                                old_width = max(old_xs) - min(old_xs)
-                                old_height = max(old_ys) - min(old_ys)
+                            if old_height > 0 and old_width > 0:
+                                curr_area = curr_width * curr_height
+                                old_area = old_width * old_height
+                                area_ratio = curr_area / old_area
                                 
-                                if old_height > 0 and old_width > 0:
-                                    curr_area = curr_width * curr_height
-                                    old_area = old_width * old_height
-                                    area_ratio = curr_area / old_area
+                                # 1. Scale-invariant Area Check (Resolution independent)
+                                if area_ratio > 1.8 or area_ratio < 0.55:
+                                    is_valid = False
+                                    invalidation_reason = f"Area jump ({area_ratio:.2f}x)"
                                     
-                                    # 1. Scale-invariant Area Check (Resolution independent)
-                                    if area_ratio > 1.8 or area_ratio < 0.55:
-                                        is_valid = False
-                                        invalidation_reason = f"Area jump ({area_ratio:.2f}x)"
-                                        
-                                    # 2. Dynamic Movement Threshold (scaled to the thrower's true pixel height)
-                                    size_multiplier = old_height / 300.0
-                                    dynamic_max_movement = max_movement * size_multiplier
-                                    
-                                    if is_valid and avg_dist > dynamic_max_movement:
-                                        is_valid = False
-                                        invalidation_reason = f"Moved {avg_dist:.1f}px (Limit: {dynamic_max_movement:.1f}px)"
-                                else:
-                                    if avg_dist > max_movement * video.scale:
-                                        is_valid = False
-                                        invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
+                                # 2. Dynamic Movement Threshold (scaled to the thrower's true pixel height)
+                                size_multiplier = old_height / 300.0
+                                dynamic_max_movement = max_movement * size_multiplier
+                                
+                                if is_valid and avg_dist > dynamic_max_movement:
+                                    is_valid = False
+                                    invalidation_reason = f"Moved {avg_dist:.1f}px (Limit: {dynamic_max_movement:.1f}px)"
                             else:
                                 if avg_dist > max_movement * video.scale:
                                     is_valid = False
                                     invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
-                        
-                    if is_valid:
-                        obj_frames[i].append(thrower_skeleton)
-                        last_valid_skeleton = thrower_skeleton
-                    else:
-                        print(f"\nSkeleton correction applied at frame {i} ({invalidation_reason})")
-                        cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
-                        obj_frames[i].append(cached_skel)
-                elif last_valid_skeleton is not None:
-                    # print(f"\nSkeleton correction applied at frame {i} (no landmarks detected)")
+                        else:
+                            if avg_dist > max_movement * video.scale:
+                                is_valid = False
+                                invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
+                    
+                if is_valid:
+                    obj_frames[i].append(thrower_skeleton)
+                    last_valid_skeleton = thrower_skeleton
+                else:
+                    print(f"\nSkeleton correction applied at frame {i} ({invalidation_reason})")
                     cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
                     obj_frames[i].append(cached_skel)
+            elif last_valid_skeleton is not None:
+                # Both YOLO and pose failed — use cached skeleton
+                cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
+                obj_frames[i].append(cached_skel)
         elif last_valid_skeleton is not None:
-            # Uncomment the print below if debugging missing throwers
-            # print(f"\nSkeleton correction applied at frame {i} (thrower missing)")
+            # No rect at all (never had a YOLO detection yet) — use cached skeleton
             cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
             obj_frames[i].append(cached_skel)
 

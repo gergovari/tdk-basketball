@@ -23,7 +23,13 @@ def extract_obj_frames(video: Video, yolo: YOLOFiltered, visualize=False):
         if i % 5 == 0 or i == total_frames - 1:
             elapsed = time.perf_counter() - t_start
             fps = (i + 1) / elapsed if elapsed > 0 else 0
-            print(f"\rExtracting frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%) — {fps:.1f} fps (video: {video.fps} fps, stride: {yolo_stride})", end="", flush=True)
+            if fps > 0:
+                eta_s = (total_frames - (i + 1)) / fps
+                m, s = divmod(int(eta_s), 60)
+                eta_str = f" | ETA: {m}m {s:02d}s"
+            else:
+                eta_str = ""
+            print(f"\rExtracting frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%) — {fps:.1f} fps (video: {video.fps} fps, stride: {yolo_stride}){eta_str}", end="", flush=True)
         if i % yolo_stride == 0:
             # Full decode + YOLO inference
             ret, frame = video.cap.read()
@@ -77,6 +83,8 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
     last_valid_skeleton = None
     total_frames = len(video)
     fps = video.fps or 30
+    import time
+    t_start = time.perf_counter()
     
     window_created = False
     
@@ -99,7 +107,15 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
         
     for i, frame in enumerate(video):
         if i % 5 == 0 or i == total_frames - 1:
-            print(f"\rTracking skeleton {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%)", end="", flush=True)
+            elapsed = time.perf_counter() - t_start
+            fps_proc = (i + 1) / elapsed if elapsed > 0 else 0
+            if fps_proc > 0:
+                eta_s = (total_frames - (i + 1)) / fps_proc
+                m, s = divmod(int(eta_s), 60)
+                eta_str = f" | ETA: {m}m {s:02d}s"
+            else:
+                eta_str = ""
+            print(f"\rTracking skeleton {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%){eta_str}", end="", flush=True)
         show_this_frame = visualize  # track per-iteration so 'q' can disable
             
         current_thrower = next(
@@ -348,12 +364,22 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
     last_valid_frame = None
     last_active_side = "Unknown"
     last_angles = {"ls": None, "le": None, "lk": None, "rs": None, "re": None, "rk": None}
+    import time
+    t_start = time.perf_counter()
     
     total_frames = (end_frame - start_frame + 1)
     
     for i in range(total_frames):
         if i % 5 == 0 or i == total_frames - 1:
-            print(f"\rRendering frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%)", end="", flush=True)
+            elapsed = time.perf_counter() - t_start
+            fps_proc = (i + 1) / elapsed if elapsed > 0 else 0
+            if fps_proc > 0:
+                eta_s = (total_frames - (i + 1)) / fps_proc
+                m, s = divmod(int(eta_s), 60)
+                eta_str = f" | ETA: {m}m {s:02d}s"
+            else:
+                eta_str = ""
+            print(f"\rRendering frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%){eta_str}", end="", flush=True)
             
         frame_idx = start_frame + i
         if release_frame != -1 and frame_idx > release_frame:

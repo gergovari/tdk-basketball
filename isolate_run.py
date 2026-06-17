@@ -2,7 +2,7 @@ from ultralytics import YOLO
 
 from config import InputParams, YOLOParams, MediaPipeParams
 from video import Video
-from ml import YOLOFiltered, MediaPipe
+from ml import YOLOFiltered, MediaPipe, YOLOPose
 from detectors import (
     BiggestPersonThrowerDetector,
     SkeletonReleaseDetector,
@@ -20,7 +20,7 @@ import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False):
+def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False):
     base_video_id = os.path.splitext(os.path.basename(input_video_path))[0]
 
     print(f"--- Processing Video: {base_video_id} ---")
@@ -102,7 +102,7 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
     print("Filtered!")
 
     print("Append skeleton of thrower...")
-    obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe, max_movement, visualize=visualize)
+    obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe, max_movement, visualize=visualize, enable_invalidation=enable_invalidation)
     print("Tracked!")
 
     print("Detecting prepare-release cycles...")
@@ -265,7 +265,13 @@ def main():
         "--visualize", action="store_true", help="Show live OpenCV windows for each processing step (press 'q' to dismiss)"
     )
     parser.add_argument(
+        "--enable-invalidation", action="store_true", help="Enable skeleton invalidation logic (defaults to False)"
+    )
+    parser.add_argument(
         "--max-movement", type=float, default=60.0, help="Maximum allowed skeleton movement per frame in scaled pixels"
+    )
+    parser.add_argument(
+        "--pose-backend", choices=["mediapipe", "yolo"], default="yolo", help="Pose estimation backend: 'mediapipe' (CPU) or 'yolo' (GPU, faster)"
     )
     parser.add_argument(
         "--output-height", type=float, default=720.0, help="Target height for the output videos"
@@ -278,19 +284,24 @@ def main():
         model_path=os.path.join(args.model_dir, "yolo26n.pt"),
         name_filter=yolo_filter,
     )
-    mp_params = MediaPipeParams(
-        model_path=os.path.join(args.model_dir, "pose_landmarker.task"),
-        min_pose_conf=0,
-        min_track_conf=0,
-    )
 
     print("Loading models...")
     model = YOLO(yolo_params.model_path)
     yolo_filtered = YOLOFiltered(model, yolo_params.name_filter)
-    mediapipe = MediaPipe(mp_params)
+    if args.pose_backend == "yolo":
+        pose_model = YOLOPose(os.path.join(args.model_dir, "yolo11n-pose.pt"))
+        print(f"Pose backend: YOLO-Pose (GPU)")
+    else:
+        mp_params = MediaPipeParams(
+            model_path=os.path.join(args.model_dir, "pose_landmarker.task"),
+            min_pose_conf=0,
+            min_track_conf=0,
+        )
+        pose_model = MediaPipe(mp_params)
+        print(f"Pose backend: MediaPipe (CPU)")
     print("Models loaded!\n")
 
-    process_video(args.video, args.output_path, yolo_filtered, mediapipe, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize)
+    process_video(args.video, args.output_path, yolo_filtered, pose_model, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation)
     print("All done!")
 
 

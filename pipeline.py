@@ -17,6 +17,7 @@ def extract_obj_frames(video: Video, yolo: YOLOFiltered, visualize=False):
     yolo_stride = max(1, round(video.fps / 15))
     t_start = time.perf_counter()
     last_detections = []
+    window_created = False
     video.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     for i in range(total_frames):
         if i % 5 == 0 or i == total_frames - 1:
@@ -37,6 +38,10 @@ def extract_obj_frames(video: Video, yolo: YOLOFiltered, visualize=False):
             vis = frame.copy()
             for obj in obj_frames[i]:
                 obj.draw(video, vis)
+            if not window_created:
+                cv2.namedWindow("YOLO Detection", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow("YOLO Detection", 1280, 720)
+                window_created = True
             cv2.imshow("YOLO Detection", vis)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -67,11 +72,13 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
 
 import math
 
-def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=60.0, visualize=False):
+def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=60.0, visualize=False, enable_invalidation=False):
     mediapipe.reset()  # Reinitialize for this video (timestamps must start fresh)
     last_valid_skeleton = None
     total_frames = len(video)
     fps = video.fps or 30
+    
+    window_created = False
     
     # Calculate the "usual spot" by finding the median center of the thrower
     thrower_centers = []
@@ -135,6 +142,8 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
                     extracted_landmarks = {}
 
                     for idx, lm in enumerate(pose_landmarks):
+                        if lm is None:
+                            continue
                         # Scale back from small crop to original crop coordinates
                         crop_x_px = lm.x * small_w / scale_factor
                         crop_y_px = lm.y * small_h / scale_factor
@@ -152,7 +161,7 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
 
                     is_valid = True
                     invalidation_reason = ""
-                    if last_valid_skeleton is not None:
+                    if enable_invalidation and last_valid_skeleton is not None:
                         total_dist = 0
                         count = 0
                         for idx, lm in thrower_skeleton.landmarks.items():
@@ -222,6 +231,10 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
             vis = frame.copy()
             for obj in obj_frames[i]:
                 obj.draw(video, vis)
+            if not window_created:
+                cv2.namedWindow("Skeleton Tracking", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow("Skeleton Tracking", 1280, 720)
+                window_created = True
             cv2.imshow("Skeleton Tracking", vis)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -259,6 +272,8 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
     else:
         target_scale = 1.0
     video.scale = target_scale
+    video.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    current_cap_idx = 0
     last_valid_frame = None
     
     last_active_side = "Unknown"
@@ -270,8 +285,15 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
             frame_idx = min(frame_idx, release_frame)
 
         try:
-            frame = video[frame_idx].copy()
-            last_valid_frame = frame
+            if frame_idx >= current_cap_idx:
+                while current_cap_idx < frame_idx:
+                    video.cap.grab()
+                    current_cap_idx += 1
+                ret, raw_frame = video.cap.read()
+                if not ret: raise IndexError
+                last_valid_frame = raw_frame if video.scale == 1.0 else cv2.resize(raw_frame, video.size)
+                current_cap_idx += 1
+            frame = last_valid_frame.copy()
         except IndexError:
             if last_valid_frame is not None:
                 frame = last_valid_frame.copy()
@@ -317,6 +339,8 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
     else:
         target_scale = 1.0
     video.scale = target_scale
+    video.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    current_cap_idx = start_frame
     
     if fps is None:
         fps = video.fps
@@ -339,8 +363,15 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
             continue
             
         try:
-            frame = video[frame_idx].copy()
-            last_valid_frame = frame
+            if frame_idx >= current_cap_idx:
+                while current_cap_idx < frame_idx:
+                    video.cap.grab()
+                    current_cap_idx += 1
+                ret, raw_frame = video.cap.read()
+                if not ret: raise IndexError
+                last_valid_frame = raw_frame if video.scale == 1.0 else cv2.resize(raw_frame, video.size)
+                current_cap_idx += 1
+            frame = last_valid_frame.copy()
         except IndexError:
             if last_valid_frame is not None:
                 frame = last_valid_frame.copy()

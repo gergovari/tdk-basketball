@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--enable-hud", action="store_true", help="Enable HUD overlays on the output video")
     parser.add_argument("--always-split", action="store_true", help="Always output individual throw videos, ignoring the exactly-5 rule")
     parser.add_argument("--full-debug-video", action="store_true", help="Always render the full run video with HUD overlays for debugging")
+    parser.add_argument("--max-movement", type=float, default=25.0, help="Maximum allowed skeleton movement per frame in scaled pixels")
+    parser.add_argument("--output-height", type=float, default=720.0, help="Target height for the output videos")
     args = parser.parse_args()
 
     data_dir = Path(args.data_folder)
@@ -73,7 +75,9 @@ def main():
             player_filter,
             enable_hud=args.enable_hud,
             always_split=args.always_split,
-            full_debug_video=args.full_debug_video
+            full_debug_video=args.full_debug_video,
+            max_movement=args.max_movement,
+            output_height=args.output_height
         )
 
     print("==================================================")

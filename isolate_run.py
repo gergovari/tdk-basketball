@@ -20,7 +20,7 @@ import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False):
+def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=25.0, output_height=720.0):
     base_video_id = os.path.splitext(os.path.basename(input_video_path))[0]
 
     print(f"--- Processing Video: {base_video_id} ---")
@@ -58,7 +58,8 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
                 len(obj_frames) - 1, 
                 -1, 
                 fps=video.fps,
-                enable_hud=True
+                enable_hud=True,
+                output_height=output_height
             )
             print(f"Wrote debug video to {debug_out_path}!")
             
@@ -75,7 +76,8 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
             len(obj_frames) - 1, 
             -1, 
             fps=video.fps,
-            enable_hud=enable_hud
+            enable_hud=enable_hud,
+            output_height=output_height
         )
         print(f"Finished {base_video_id}\n")
         return
@@ -100,7 +102,7 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
     print("Filtered!")
 
     print("Append skeleton of thrower...")
-    obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe)
+    obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe, max_movement)
     print("Tracked!")
 
     print("Detecting prepare-release cycles...")
@@ -157,7 +159,8 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
             -1, 
             fps=video.fps,
             enable_hud=True,
-            cycles=cycles
+            cycles=cycles,
+            output_height=output_height
         )
         print(f"Wrote debug video to {debug_out_path}!")
 
@@ -175,7 +178,8 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
             -1, 
             fps=video.fps,
             enable_hud=enable_hud,
-            valid_frames=valid_frames_set
+            valid_frames=valid_frames_set,
+            output_height=output_height
         )
         print(f"Finished {base_video_id}\n")
         return
@@ -194,7 +198,8 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
             -1, 
             fps=video.fps,
             enable_hud=enable_hud,
-            valid_frames=valid_frames_set
+            valid_frames=valid_frames_set,
+            output_height=output_height
         )
         print(f"Finished {base_video_id}\n")
         return
@@ -205,15 +210,16 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
         out_path = os.path.join(output_dir, f"{base_video_id}-{throw_num}.mp4")
         print(f"Writing out to {out_path} (frames {prep_frame} to {rel_frame})...")
         render_throw_video(
-            params["input_video_path"], 
-            out_path, 
-            obj_frames, 
-            prep_frame, 
-            rel_frame, 
-            rel_frame, 
+            input_video_path,
+            out_path,
+            obj_frames,
+            start_frame=prep_frame,
+            end_frame=rel_frame,
+            release_frame=rel_frame,
             fps=video.fps,
             enable_hud=enable_hud,
-            valid_frames=valid_frames_set
+            valid_frames=valid_frames_set,
+            output_height=output_height
         )
         print(f"Wrote throw {throw_num}!")
 
@@ -237,6 +243,12 @@ def main():
     parser.add_argument(
         "--full-debug-video", action="store_true", help="Always render the full run video with HUD overlays for debugging"
     )
+    parser.add_argument(
+        "--max-movement", type=float, default=25.0, help="Maximum allowed skeleton movement per frame in scaled pixels"
+    )
+    parser.add_argument(
+        "--output-height", type=float, default=720.0, help="Target height for the output videos"
+    )
     args = parser.parse_args()
 
     player_filter = ["player", "person", "human"]
@@ -257,7 +269,7 @@ def main():
     mediapipe = MediaPipe(mp_params)
     print("Models loaded!\n")
 
-    process_video(args.video, args.output_path, yolo_filtered, mediapipe, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video)
+    process_video(args.video, args.output_path, yolo_filtered, mediapipe, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height)
     print("All done!")
 
 

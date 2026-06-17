@@ -78,16 +78,42 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
         if not tracks:
             return []
             
-        best_track = max(tracks, key=lambda t: len(t['frames']))
-        
-        b_centers = []
-        for obj in best_track['frames'].values():
-            b_centers.append(((obj.rect.x1 + obj.rect.x2) / 2, (obj.rect.y1 + obj.rect.y2) / 2))
+        valid_tracks = []
+        for track in tracks:
+            t_centers = []
+            for obj in track['frames'].values():
+                t_centers.append(((obj.rect.x1 + obj.rect.x2) / 2, (obj.rect.y1 + obj.rect.y2) / 2))
+                
+            t_centers.sort(key=lambda p: p[0])
+            median_x = t_centers[len(t_centers)//2][0]
+            t_centers.sort(key=lambda p: p[1])
+            median_y = t_centers[len(t_centers)//2][1]
             
-        b_centers.sort(key=lambda p: p[0])
-        best_median_x = b_centers[len(b_centers)//2][0]
-        b_centers.sort(key=lambda p: p[1])
-        best_median_y = b_centers[len(b_centers)//2][1]
+            track['median_x'] = median_x
+            track['median_y'] = median_y
+            
+            if video_size is not None:
+                # Reject tracks that have a median center on the outer 15% edges of the frame
+                margin = video_size[0] * 0.15
+                if median_x < margin or median_x > video_size[0] - margin:
+                    continue
+                    
+                # Score based on length AND proximity to the horizontal center
+                center_x = video_size[0] / 2
+                dist_to_center = abs(median_x - center_x)
+                weight = 1.0 - (dist_to_center / center_x)
+                track['score'] = len(track['frames']) * weight
+            else:
+                track['score'] = len(track['frames'])
+                
+            valid_tracks.append(track)
+            
+        if not valid_tracks:
+            return []
+            
+        best_track = max(valid_tracks, key=lambda t: t['score'])
+        best_median_x = best_track['median_x']
+        best_median_y = best_track['median_y']
         
         for track in tracks:
             if track is best_track:

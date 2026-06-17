@@ -39,7 +39,7 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
 
 import math
 
-def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe):
+def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=25.0):
     last_valid_skeleton = None
     total_frames = len(video)
     
@@ -118,7 +118,7 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe):
                         
                         if count > 0:
                             avg_dist = total_dist / count
-                            if avg_dist > 25 * video.scale:
+                            if avg_dist > max_movement * video.scale:
                                 is_valid = False
                         
                     if is_valid:
@@ -160,10 +160,10 @@ def cut_after_release(obj_frames, detectors, fps):
         return cut, earliest, earliest_detector
     return obj_frames, -1, ""
 
-def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name=""):
+def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name="", output_height=720.0):
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if orig_height > 0:
-        target_scale = 720.0 / orig_height
+        target_scale = output_height / orig_height
     else:
         target_scale = 1.0
     video.scale = target_scale
@@ -217,11 +217,11 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
 
         video.write(frame)
 
-def render_throw_video(input_video_path, output_video_path, obj_frames, start_frame, end_frame, release_frame, fps=None, enable_hud=False, valid_frames=None, cycles=None):
+def render_throw_video(input_video_path, output_video_path, obj_frames, start_frame, end_frame, release_frame, fps=None, enable_hud=False, valid_frames=None, cycles=None, output_height=720.0):
     video = Video(input_video_path, output_video_path)
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if orig_height > 0:
-        target_scale = 720.0 / orig_height
+        target_scale = output_height / orig_height
     else:
         target_scale = 1.0
     video.scale = target_scale

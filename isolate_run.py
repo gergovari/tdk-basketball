@@ -20,7 +20,7 @@ import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=25.0, output_height=720.0):
+def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False):
     base_video_id = os.path.splitext(os.path.basename(input_video_path))[0]
 
     print(f"--- Processing Video: {base_video_id} ---")
@@ -32,7 +32,7 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
     video = Video(params["input_video_path"], params["output_video_path"])
 
     print(f"Extracting object frames from {input_video_path}...")
-    obj_frames = extract_obj_frames(video, yolo_filtered)
+    obj_frames = extract_obj_frames(video, yolo_filtered, visualize=visualize)
     print(f"Extracted! ({len(obj_frames)})")
 
     print("Find thrower...")
@@ -102,7 +102,7 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
     print("Filtered!")
 
     print("Append skeleton of thrower...")
-    obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe, max_movement)
+    obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe, max_movement, visualize=visualize)
     print("Tracked!")
 
     print("Detecting prepare-release cycles...")
@@ -262,7 +262,10 @@ def main():
         "--full-debug-video", action="store_true", help="Always render the full run video with HUD overlays for debugging"
     )
     parser.add_argument(
-        "--max-movement", type=float, default=40.0, help="Maximum allowed skeleton movement per frame in scaled pixels"
+        "--visualize", action="store_true", help="Show live OpenCV windows for each processing step (press 'q' to dismiss)"
+    )
+    parser.add_argument(
+        "--max-movement", type=float, default=60.0, help="Maximum allowed skeleton movement per frame in scaled pixels"
     )
     parser.add_argument(
         "--output-height", type=float, default=720.0, help="Target height for the output videos"
@@ -287,7 +290,7 @@ def main():
     mediapipe = MediaPipe(mp_params)
     print("Models loaded!\n")
 
-    process_video(args.video, args.output_path, yolo_filtered, mediapipe, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height)
+    process_video(args.video, args.output_path, yolo_filtered, mediapipe, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize)
     print("All done!")
 
 

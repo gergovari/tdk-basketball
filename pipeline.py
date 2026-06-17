@@ -9,14 +9,25 @@ from utils import ScaledInt
 from ui import HUD
 import os
 
-def extract_obj_frames(video: Video, yolo: YOLOFiltered):
+def extract_obj_frames(video: Video, yolo: YOLOFiltered, visualize=False):
     total_frames = len(video)
     obj_frames = [[] for x in range(total_frames)]
     for i, frame in enumerate(video):
         if i % 5 == 0 or i == total_frames - 1:
             print(f"\rExtracting frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%)", end="", flush=True)
         obj_frames[i].extend(yolo.track(video, frame))
+        if visualize:
+            vis = frame.copy()
+            for obj in obj_frames[i]:
+                obj.draw(video, vis)
+            cv2.imshow("YOLO Detection", vis)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                visualize = False
+                cv2.destroyWindow("YOLO Detection")
     print()
+    if visualize:
+        cv2.destroyWindow("YOLO Detection")
     return obj_frames
 
 def enrich_player_with_action(player_filter: List[str], obj_frames):
@@ -39,7 +50,7 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
 
 import math
 
-def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=40.0):
+def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=60.0, visualize=False):
     last_valid_skeleton = None
     total_frames = len(video)
     
@@ -63,6 +74,7 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
     for i, frame in enumerate(video):
         if i % 5 == 0 or i == total_frames - 1:
             print(f"\rTracking skeleton {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%)", end="", flush=True)
+        show_this_frame = visualize  # track per-iteration so 'q' can disable
             
         current_thrower = next(
             (obj for obj in obj_frames[i] if obj.id == thrower_id), None
@@ -174,7 +186,19 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
             cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
             obj_frames[i].append(cached_skel)
 
+        if show_this_frame:
+            vis = frame.copy()
+            for obj in obj_frames[i]:
+                obj.draw(video, vis)
+            cv2.imshow("Skeleton Tracking", vis)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                visualize = False
+                cv2.destroyWindow("Skeleton Tracking")
+
     print() # Newline after progress finishes
+    if visualize:
+        cv2.destroyWindow("Skeleton Tracking")
     return obj_frames
 
 def cut_after_release(obj_frames, detectors, fps):

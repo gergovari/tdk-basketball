@@ -159,6 +159,12 @@ class ReleaseDetector(ABC):
 @dataclass
 class SkeletonReleaseDetector(ReleaseDetector):
     def detect(self, obj_frames, fps: int, start_idx: int = 0) -> int:
+        max_angle = -1
+        max_frame = -1
+        
+        # We need the elbow to at least extend to 140 to consider it a real throw
+        min_required_extension = 140 
+        
         for i in range(start_idx, len(obj_frames)):
             obj_frame = obj_frames[i]
             for obj in obj_frame:
@@ -173,22 +179,23 @@ class SkeletonReleaseDetector(ReleaseDetector):
                         obj.right_shoulder_angle,
                         obj.right_elbow_angle,
                     )
-
-                    left_shot = (
-                        all(x is not None for x in la)
-                        and la[0] > 170
-                        and la[1] > 130
-                        and la[2] > 150
-                    )
-                    right_shot = (
-                        all(x is not None for x in ra)
-                        and ra[0] > 170
-                        and ra[1] > 130
-                        and ra[2] > 150
-                    )
-
-                    if left_shot or right_shot:
-                        return i
+                    
+                    # Ensure shoulders are somewhat raised (>90) to rule out just standing up
+                    l_val = la[2] if (la[2] is not None and la[1] is not None and la[1] > 90) else -1
+                    r_val = ra[2] if (ra[2] is not None and ra[1] is not None and ra[1] > 90) else -1
+                    
+                    angle = max(l_val, r_val)
+                    
+                    if angle > max_angle:
+                        max_angle = angle
+                        max_frame = i
+                    elif angle != -1 and angle < max_angle - 15 and max_angle > min_required_extension:
+                        # Angle has dropped significantly from the peak, meaning the stroke is over!
+                        return max_frame
+                        
+        if max_angle > min_required_extension:
+            return max_frame
+            
         return -1
 
 

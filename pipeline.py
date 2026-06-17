@@ -10,13 +10,30 @@ from ui import HUD
 import os
 
 def extract_obj_frames(video: Video, yolo: YOLOFiltered, visualize=False):
+    import time
     total_frames = len(video)
     obj_frames = [[] for x in range(total_frames)]
-    for i, frame in enumerate(video):
+    # Run YOLO at ~15 effective fps — plenty for tracking people standing in place
+    yolo_stride = max(1, round(video.fps / 15))
+    t_start = time.perf_counter()
+    last_detections = []
+    video.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for i in range(total_frames):
         if i % 5 == 0 or i == total_frames - 1:
-            print(f"\rExtracting frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%)", end="", flush=True)
-        obj_frames[i].extend(yolo.track(video, frame))
-        if visualize:
+            elapsed = time.perf_counter() - t_start
+            fps = (i + 1) / elapsed if elapsed > 0 else 0
+            print(f"\rExtracting frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%) — {fps:.1f} fps (video: {video.fps} fps, stride: {yolo_stride})", end="", flush=True)
+        if i % yolo_stride == 0:
+            # Full decode + YOLO inference
+            ret, frame = video.cap.read()
+            if not ret:
+                break
+            last_detections = yolo.track(video, frame)
+        else:
+            # Fast skip — advances decoder without producing a numpy array
+            video.cap.grab()
+        obj_frames[i].extend(last_detections)
+        if visualize and i % yolo_stride == 0:
             vis = frame.copy()
             for obj in obj_frames[i]:
                 obj.draw(video, vis)
@@ -51,8 +68,10 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
 import math
 
 def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max_movement=60.0, visualize=False):
+    mediapipe.reset()  # Reinitialize for this video (timestamps must start fresh)
     last_valid_skeleton = None
     total_frames = len(video)
+    fps = video.fps or 30
     
     # Calculate the "usual spot" by finding the median center of the thrower
     thrower_centers = []
@@ -97,15 +116,28 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
 
             crop_h, crop_w = thrower_crop.shape[:2]
             if crop_h > 0 and crop_w > 0:
-                detection_result = mediapipe.detect(thrower_crop)
+                # Cap crop size for MediaPipe — pose model doesn't benefit from huge crops
+                max_crop_h = 480
+                if crop_h > max_crop_h:
+                    scale_factor = max_crop_h / crop_h
+                    small_crop = cv2.resize(thrower_crop, (int(crop_w * scale_factor), max_crop_h))
+                    small_h, small_w = small_crop.shape[:2]
+                else:
+                    small_crop = thrower_crop
+                    small_h, small_w = crop_h, crop_w
+                    scale_factor = 1.0
+
+                timestamp_ms = int(i * 1000 / fps)
+                detection_result = mediapipe.detect(small_crop, timestamp_ms)
 
                 if detection_result.pose_landmarks:
                     pose_landmarks = detection_result.pose_landmarks[0]
                     extracted_landmarks = {}
 
                     for idx, lm in enumerate(pose_landmarks):
-                        crop_x_px = lm.x * crop_w
-                        crop_y_px = lm.y * crop_h
+                        # Scale back from small crop to original crop coordinates
+                        crop_x_px = lm.x * small_w / scale_factor
+                        crop_y_px = lm.y * small_h / scale_factor
                         full_x_px = int(crop_x_px + rect.x1)
                         full_y_px = int(crop_y_px + rect.y1)
 
@@ -186,7 +218,7 @@ def append_thrower_skeleton(video: Video, obj_frames, thrower_id, mediapipe, max
             cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
             obj_frames[i].append(cached_skel)
 
-        if show_this_frame:
+        if show_this_frame and i % 3 == 0:
             vis = frame.copy()
             for obj in obj_frames[i]:
                 obj.draw(video, vis)

@@ -12,10 +12,16 @@ from entities import Rectangle, Object
 class YOLOFiltered:
     model: YOLO
     name_filter: List
+    imgsz: int = 320
+
+    def __post_init__(self):
+        import torch
+        self.use_half = torch.cuda.is_available()
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     def track(self, video, frame):
         objects = []
-        results = self.model.track(frame, persist=True, verbose=False)
+        results = self.model.track(frame, persist=True, verbose=False, imgsz=self.imgsz, half=self.use_half, device=self.device)
         result = results[0]
 
         for box in result.boxes:
@@ -42,6 +48,7 @@ class YOLOFiltered:
 
 class MediaPipe:
     def __init__(self, mp_params):
+        self._mp_params = mp_params
         base_options = python.BaseOptions(model_asset_path=mp_params.model_path)
         options = vision.PoseLandmarkerOptions(
             base_options=base_options,
@@ -51,7 +58,12 @@ class MediaPipe:
         )
         self.detector = vision.PoseLandmarker.create_from_options(options)
 
-    def detect(self, frame):
+    def reset(self):
+        """No-op for IMAGE mode (kept for API compatibility)."""
+        pass
+
+    def detect(self, frame, timestamp_ms=None):
         crop_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=crop_rgb)
         return self.detector.detect(mp_image)
+

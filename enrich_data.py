@@ -55,7 +55,8 @@ def main():
         print(f"No videos found matching the structure in {data_dir}/*/*/runs/")
         return
 
-    for video_path in video_files:
+    total_videos = len(video_files)
+    for video_idx, video_path in enumerate(video_files):
         # e.g., <data_dir>/<exp_id>/<part_id>/runs/<video_file>
         runs_dir = video_path.parent
         participant_dir = runs_dir.parent
@@ -64,6 +65,7 @@ def main():
         output_dir.mkdir(parents=True, exist_ok=True)
         
         print("==================================================")
+        print(f"[Video {video_idx + 1}/{total_videos}] ({(video_idx + 1) / total_videos * 100:.1f}%)")
         print(f"Processing video: {video_path}")
         print(f"Output directory: {output_dir}")
         

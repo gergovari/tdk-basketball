@@ -141,7 +141,25 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
         cycles.append((prep_frame, rel_frame))
         curr_frame = rel_frame + 1
 
-    print(f"Found {prepares_found} prepares and {releases_found} releases, resulting in {len(cycles)} full cycles!")
+    print(f"Found {prepares_found} prepares and {releases_found} releases, resulting in {len(cycles)} raw cycles!")
+
+    # Merge overlapping throws (e.g. pump fakes or double clutches)
+    merged_cycles = []
+    for cycle in cycles:
+        if not merged_cycles:
+            merged_cycles.append(cycle)
+        else:
+            last_prep, last_rel = merged_cycles[-1]
+            curr_prep, curr_rel = cycle
+            
+            # If the next throw starts before or very shortly after the previous release (e.g. within 1 second)
+            if curr_prep <= last_rel + int(video.fps * 1.0):
+                merged_cycles[-1] = (last_prep, curr_rel)
+            else:
+                merged_cycles.append(cycle)
+                
+    cycles = merged_cycles
+    print(f"After merging overlapping actions, we have {len(cycles)} definitive throw cycles.")
 
     video.release()
     if os.path.exists(params["output_video_path"]):

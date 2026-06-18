@@ -476,11 +476,12 @@ def export_skeleton_data(obj_frames, output_path, fps, release_frame, start_fram
         writer = csv.writer(f)
         headers = ["frame", "time_sec", "released", "handedness"]
         for idx in sorted(landmark_mapping.keys()):
-            headers.append(landmark_mapping[idx])
+            name = landmark_mapping[idx]
+            headers.extend([f"{name}_x", f"{name}_y", f"{name}_conf"])
         writer.writerow(headers)
         
         last_active_side = "Unknown"
-        last_coords = {idx: "" for idx in landmark_mapping.keys()}
+        last_coords = {idx: ["", "", ""] for idx in landmark_mapping.keys()}
         
         if end_frame is None:
             end_frame = len(obj_frames) - 1
@@ -538,13 +539,14 @@ def export_skeleton_data(obj_frames, output_path, fps, release_frame, start_fram
                         lm = skel.landmarks[idx]
                         nx = (lm.x - origin_x) / scale
                         ny = (lm.y - origin_y) / scale
-                        val = f"({nx:.3f}, {ny:.3f})"
-                        row.append(val)
-                        last_coords[idx] = val
+                        conf = lm.visibility
+                        vals = [f"{nx:.3f}", f"{ny:.3f}", f"{conf:.3f}"]
+                        row.extend(vals)
+                        last_coords[idx] = vals
                     else:
-                        row.append(last_coords[idx])
+                        row.extend(last_coords[idx])
             else:
                 for idx in sorted(landmark_mapping.keys()):
-                    row.append(last_coords[idx])
+                    row.extend(last_coords[idx])
                 
             writer.writerow(row)

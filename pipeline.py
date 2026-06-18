@@ -10,6 +10,13 @@ from ui import HUD
 import os
 import math
 import time
+import sys
+import select
+try:
+    import termios
+    import tty
+except ImportError:
+    pass
 
 
 def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movement=60.0, visualize=False, enable_invalidation=False, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4):
@@ -37,6 +44,16 @@ def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movemen
     if lowpass > 0: filter_desc.append(f"lowpass(a={lowpass})")
     print(f"  Filters: {', '.join(filter_desc) if filter_desc else 'none'}")
     
+    has_termios = 'termios' in sys.modules
+    if has_termios:
+        try:
+            import atexit
+            old_settings = termios.tcgetattr(sys.stdin)
+            tty.setcbreak(sys.stdin.fileno())
+            atexit.register(termios.tcsetattr, sys.stdin, termios.TCSADRAIN, old_settings)
+        except Exception:
+            has_termios = False
+
     for i in range(total_frames):
         if i % 5 == 0 or i == total_frames - 1:
             elapsed = time.perf_counter() - t_start
@@ -168,6 +185,11 @@ def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movemen
                 cached_skel._track_id = track_id
                 obj_frames[i].append(cached_skel)
 
+        term_key = None
+        if has_termios and select.select([sys.stdin], [], [], 0)[0]:
+            term_key = sys.stdin.read(1)
+
+        cv_key = -1
         if visualize and i % 3 == 0:
             vis = frame.copy()
             for obj in obj_frames[i]:
@@ -177,11 +199,23 @@ def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movemen
                 cv2.resizeWindow("Extraction & Refining", 1280, 720)
                 window_created = True
             cv2.imshow("Extraction & Refining", vis)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                visualize = False
+            cv_key = cv2.waitKey(1) & 0xFF
+
+        pressed_v = (term_key == 'v' or cv_key == ord('v'))
+        pressed_q = (term_key == 'q' or cv_key == ord('q'))
+
+        if pressed_v:
+            visualize = not visualize
+            if not visualize and window_created:
                 cv2.destroyWindow("Extraction & Refining")
                 window_created = False
+        elif pressed_q:
+            visualize = False
+            if window_created:
+                cv2.destroyWindow("Extraction & Refining")
+                window_created = False
+
+
 
     print()
     if visualize and window_created:
@@ -375,11 +409,12 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
                 if skel.right_knee_angle is not None: last_angles["rk"] = skel.right_knee_angle
 
             if cycles is not None:
+                safe_fps = fps if fps and fps > 0 else 30.0
                 for prep, rel in cycles:
-                    if prep <= frame_idx < rel:
-                        status_text = "PREPARE"
-                    elif frame_idx >= rel:
+                    if rel <= frame_idx < rel + int(safe_fps * 1.0):
                         status_text = "RELEASED"
+                    elif prep <= frame_idx < min(prep + int(safe_fps * 1.0), rel):
+                        status_text = "PREPARE"
             elif is_released:
                 status_text = "RELEASED"
                 
@@ -401,7 +436,7 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
     print() # Newline after progress finishes
     video.release()
 
-def export_skeleton_data(obj_frames, output_path, fps, release_frame):
+def export_skeleton_data(obj_frames, output_path, fps, release_frame, start_frame=0, end_frame=None):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     with open(output_path, "w", newline="") as f:
@@ -415,13 +450,18 @@ def export_skeleton_data(obj_frames, output_path, fps, release_frame):
         last_active_side = "Unknown"
         last_angles = ["", "", "", "", "", ""]
         
-        for i, obj_frame in enumerate(obj_frames):
-            if release_frame != -1 and i > release_frame:
+        if end_frame is None:
+            end_frame = len(obj_frames) - 1
+            
+        for i in range(start_frame, end_frame + 1):
+            if i >= len(obj_frames):
                 break
                 
+            obj_frame = obj_frames[i]
+            
             skel = next((obj for obj in obj_frame if isinstance(obj, Skeleton)), None)
             
-            time_sec = i / fps if fps else 0
+            time_sec = (i - start_frame) / fps if fps else 0
             released = release_frame != -1 and i >= release_frame
             
             if skel:

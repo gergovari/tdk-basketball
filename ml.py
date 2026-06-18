@@ -26,7 +26,7 @@ class YOLOPose:
     pipeline no longer needs a separate YOLO detection model.
     """
 
-    def __init__(self, model_path='models/yolo11n-pose.pt'):
+    def __init__(self, model_path='models/yolov8x-pose-p6.pt'):
         import torch
         self.model = YOLO(model_path)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'

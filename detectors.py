@@ -311,7 +311,7 @@ class CycleDetector(ABC):
 class ThrowCycleDetector(CycleDetector):
     prep_detector: ReleaseDetector = field(default_factory=SkeletonPrepareDetector)
     rel_detector: ReleaseDetector = field(default_factory=SkeletonReleaseDetector)
-    follow_through_seconds: float = 1.5
+    follow_through_seconds: float = 0.0
 
     def detect(self, obj_frames, fps: int, first_frame: int, last_frame: int, max_throws=None):
         cycles = []

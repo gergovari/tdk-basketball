@@ -4,3 +4,4 @@ __pycache__/*
 *.cpython-*
 *.mp4
 cleaneddata*/
+out/*

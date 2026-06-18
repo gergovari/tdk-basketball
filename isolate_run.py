@@ -11,13 +11,14 @@ from pipeline import (
     extract_and_refine_obj_frames,
     only_keep_relevant_obj_frames,
     render_throw_video,
+    export_skeleton_data,
 )
 
 import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=1.5):
+def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=0.0):
     if not os.path.isfile(input_video_path):
         print(f"Error: Video file not found: {input_video_path}")
         return
@@ -140,6 +141,15 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
             cycles=cycles,
             output_height=output_height
         )
+        debug_csv_path = os.path.join(output_dir, f"{base_video_id}-DEBUG.csv")
+        export_skeleton_data(
+            obj_frames,
+            debug_csv_path,
+            video.fps,
+            release_frame=-1,
+            start_frame=0,
+            end_frame=len(obj_frames) - 1
+        )
         print(f"Wrote debug video to {debug_out_path}!")
 
     if len(cycles) == 0:
@@ -158,6 +168,15 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
             enable_hud=enable_hud,
             valid_frames=valid_frames_set,
             output_height=output_height
+        )
+        csv_path = os.path.join(output_dir, f"{base_video_id}-{identifier}.csv")
+        export_skeleton_data(
+            obj_frames, 
+            csv_path, 
+            video.fps, 
+            release_frame=-1, 
+            start_frame=first_thrower_frame, 
+            end_frame=last_thrower_frame
         )
         print(f"Finished {base_video_id}\n")
         return
@@ -180,6 +199,15 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
             enable_hud=enable_hud,
             valid_frames=valid_frames_set,
             output_height=output_height
+        )
+        csv_path = os.path.join(output_dir, f"{base_video_id}-{throw_num}.csv")
+        export_skeleton_data(
+            obj_frames, 
+            csv_path, 
+            video.fps, 
+            release_frame=rel_frame, 
+            start_frame=prep_frame, 
+            end_frame=rel_frame
         )
         print(f"Wrote throw {throw_num}!")
 
@@ -213,7 +241,7 @@ def main():
         '--max-throws', type=int, default=None, help="Maximum number of throws to detect per video (default: unlimited)"
     )
     parser.add_argument(
-        '--pose-model', default="yolo11n-pose.pt", help="YOLO-Pose model filename (in model_dir)"
+        '--pose-model', default="yolov8x-pose-p6.pt", help="YOLO-Pose model filename (in model_dir)"
     )
     parser.add_argument(
         "--output-height", type=float, default=720.0, help="Target height for the output videos"
@@ -228,7 +256,7 @@ def main():
         '--lowpass', type=float, default=0.4, help="Low-pass filter strength on keypoint positions (0=off, 0.8=heavy, default: 0.4)"
     )
     parser.add_argument(
-        '--follow-through', type=float, default=1.5, help="Seconds to record after the release (default: 1.5)"
+        '--follow-through', type=float, default=0.0, help="Seconds to record after the release (default: 0.0)"
     )
     args = parser.parse_args()
 

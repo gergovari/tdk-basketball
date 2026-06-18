@@ -1,11 +1,68 @@
 import cv2
 import os
+import threading
+import queue
+import time
+
+class ThreadedVideoCapture:
+    """Asynchronous video reader that decodes frames in a background thread.
+    This prevents CPU decoding from blocking the GPU inference, significantly boosting FPS.
+    """
+    def __init__(self, src):
+        self.cap = cv2.VideoCapture(src)
+        self.q = queue.Queue(maxsize=128)
+        self.stopped = False
+        self.lock = threading.Lock()
+        self.t = threading.Thread(target=self._reader, daemon=True)
+        self.t.start()
+
+    def _reader(self):
+        while not self.stopped:
+            if not self.q.full():
+                with self.lock:
+                    ret, frame = self.cap.read()
+                if not ret:
+                    self.q.put((False, None))
+                    self.stopped = True
+                    break
+                self.q.put((True, frame))
+            else:
+                time.sleep(0.005)
+
+    def read(self):
+        if self.stopped and self.q.empty():
+            return False, None
+        return self.q.get()
+
+    def set(self, propId, value):
+        with self.lock:
+            res = self.cap.set(propId, value)
+        if propId == cv2.CAP_PROP_POS_FRAMES:
+            # Clear the queue when seeking so we don't get stale frames
+            with self.q.mutex:
+                self.q.queue.clear()
+            self.stopped = False  # Reset stopped flag if we seek back
+        return res
+
+    def get(self, propId):
+        with self.lock:
+            return self.cap.get(propId)
+
+    def isOpened(self):
+        with self.lock:
+            return self.cap.isOpened()
+
+    def release(self):
+        self.stopped = True
+        with self.lock:
+            if self.cap.isOpened():
+                self.cap.release()
 
 class Video:
     def __init__(self, input_video_path, output_video_path, scale=1.0):
         self.Scale = scale
         self.output_video_path = output_video_path
-        self.cap = cv2.VideoCapture(input_video_path)
+        self.cap = ThreadedVideoCapture(input_video_path)
         self.out = cv2.VideoWriter(
             self.output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), self.fps, self.size
         )

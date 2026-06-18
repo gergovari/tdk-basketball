@@ -465,16 +465,22 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
 def export_skeleton_data(obj_frames, output_path, fps, release_frame, start_frame=0, end_frame=None):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
+    landmark_mapping = {
+        0: "nose", 2: "left_eye", 5: "right_eye", 7: "left_ear", 8: "right_ear",
+        11: "left_shoulder", 12: "right_shoulder", 13: "left_elbow", 14: "right_elbow",
+        15: "left_wrist", 16: "right_wrist", 23: "left_hip", 24: "right_hip",
+        25: "left_knee", 26: "right_knee", 27: "left_ankle", 28: "right_ankle"
+    }
+    
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "frame", "time_sec", "released", "handedness",
-            "left_shoulder", "left_elbow", "left_knee", 
-            "right_shoulder", "right_elbow", "right_knee"
-        ])
+        headers = ["frame", "time_sec", "released", "handedness"]
+        for idx in sorted(landmark_mapping.keys()):
+            headers.append(landmark_mapping[idx])
+        writer.writerow(headers)
         
         last_active_side = "Unknown"
-        last_angles = ["", "", "", "", "", ""]
+        last_coords = {idx: "" for idx in landmark_mapping.keys()}
         
         if end_frame is None:
             end_frame = len(obj_frames) - 1
@@ -484,7 +490,6 @@ def export_skeleton_data(obj_frames, output_path, fps, release_frame, start_fram
                 break
                 
             obj_frame = obj_frames[i]
-            
             skel = next((obj for obj in obj_frame if isinstance(obj, Skeleton)), None)
             
             time_sec = (i - start_frame) / fps if fps else 0
@@ -497,17 +502,49 @@ def export_skeleton_data(obj_frames, output_path, fps, release_frame, start_fram
                     else:
                         last_active_side = "Left"
                         
-            row = [i, f"{time_sec:.3f}", released, last_active_side, "", "", "", "", "", ""]
+            row = [i, f"{time_sec:.3f}", released, last_active_side]
             
             if skel:
-                row[4] = f"{skel.left_shoulder_angle:.1f}" if skel.left_shoulder_angle is not None else last_angles[0]
-                row[5] = f"{skel.left_elbow_angle:.1f}" if skel.left_elbow_angle is not None else last_angles[1]
-                row[6] = f"{skel.left_knee_angle:.1f}" if skel.left_knee_angle is not None else last_angles[2]
-                row[7] = f"{skel.right_shoulder_angle:.1f}" if skel.right_shoulder_angle is not None else last_angles[3]
-                row[8] = f"{skel.right_elbow_angle:.1f}" if skel.right_elbow_angle is not None else last_angles[4]
-                row[9] = f"{skel.right_knee_angle:.1f}" if skel.right_knee_angle is not None else last_angles[5]
-            else:
-                row[4:10] = last_angles
+                # Normalize coordinates (mid-hip origin, torso-length scale)
+                l_hip = skel.landmarks.get(23)
+                r_hip = skel.landmarks.get(24)
+                l_sho = skel.landmarks.get(11)
+                r_sho = skel.landmarks.get(12)
                 
-            last_angles = row[4:10]
+                scale = 1.0
+                origin_x, origin_y = 0.0, 0.0
+                
+                if l_hip and r_hip and l_sho and r_sho:
+                    origin_x = (l_hip.x + r_hip.x) / 2.0
+                    origin_y = (l_hip.y + r_hip.y) / 2.0
+                    mid_sho_x = (l_sho.x + r_sho.x) / 2.0
+                    mid_sho_y = (l_sho.y + r_sho.y) / 2.0
+                    scale = math.hypot(mid_sho_x - origin_x, mid_sho_y - origin_y)
+                else:
+                    # Fallback to bounding box height if torso isn't fully visible
+                    xs = [lm.x for lm in skel.landmarks.values()]
+                    ys = [lm.y for lm in skel.landmarks.values()]
+                    if xs and ys:
+                        min_x, max_x = min(xs), max(xs)
+                        min_y, max_y = min(ys), max(ys)
+                        origin_x, origin_y = min_x, min_y
+                        scale = max_y - min_y
+                
+                if scale < 1.0:
+                    scale = 1.0
+                    
+                for idx in sorted(landmark_mapping.keys()):
+                    if idx in skel.landmarks:
+                        lm = skel.landmarks[idx]
+                        nx = (lm.x - origin_x) / scale
+                        ny = (lm.y - origin_y) / scale
+                        val = f"({nx:.3f}, {ny:.3f})"
+                        row.append(val)
+                        last_coords[idx] = val
+                    else:
+                        row.append(last_coords[idx])
+            else:
+                for idx in sorted(landmark_mapping.keys()):
+                    row.append(last_coords[idx])
+                
             writer.writerow(row)

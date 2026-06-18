@@ -31,6 +31,9 @@ class YOLOPose:
         self.model = YOLO(model_path)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.use_half = torch.cuda.is_available()
+        
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
 
     def reset(self):
         """Reset tracker state between videos."""
@@ -45,7 +48,8 @@ class YOLOPose:
         """
         results = self.model.track(
             frame, persist=True, verbose=False,
-            imgsz=imgsz, half=self.use_half, device=self.device
+            imgsz=imgsz, half=self.use_half, device=self.device,
+            tracker="bytetrack.yaml"
         )
         result = results[0]
 

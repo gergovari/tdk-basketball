@@ -67,8 +67,10 @@ def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movemen
                 eta_str = ""
             print(f"\rExtracting & Refining {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%) — {fps:.1f} fps{eta_str}", end="", flush=True)
             
-        ret, frame = video.cap.read()
-        if not ret: break
+        try:
+            frame = next(video)
+        except StopIteration:
+            break
         
         detections = yolo_pose.track(video, frame)
         active_tracks = set()

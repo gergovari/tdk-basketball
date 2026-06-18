@@ -49,7 +49,7 @@ class YOLOPose:
         results = self.model.track(
             frame, persist=True, verbose=False,
             imgsz=imgsz, half=self.use_half, device=self.device,
-            tracker="bytetrack.yaml"
+            tracker="bytetrack.yaml", classes=[0]
         )
         result = results[0]
 

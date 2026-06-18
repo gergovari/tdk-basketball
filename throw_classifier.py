@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import pickle
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, GridSearchCV
 
 def calculate_angle(a, b, c):
     """Calculate angle between points A, B, C with vertex at B."""
@@ -49,41 +49,64 @@ def extract_features(csv_path):
     def get_pt(row, joint):
         return (row[f'{prefix}{joint}_x'], row[f'{prefix}{joint}_y'])
         
-    # Feature 1: Angles at the exact moment of release
     try:
         shoulder_pt = get_pt(release_row, 'shoulder')
-        elbow_pt = get_pt(release_row, 'elbow')
         wrist_pt = get_pt(release_row, 'wrist')
         hip_pt = get_pt(release_row, 'hip')
         knee_pt = get_pt(release_row, 'knee')
-        ankle_pt = get_pt(release_row, 'ankle')
-        
-        elbow_angle = calculate_angle(shoulder_pt, elbow_pt, wrist_pt)
-        shoulder_angle = calculate_angle(hip_pt, shoulder_pt, elbow_pt)
-        knee_angle = calculate_angle(hip_pt, knee_pt, ankle_pt)
     except Exception:
-        # If landmarks are missing
-        elbow_angle, shoulder_angle, knee_angle = 0, 0, 0
-        
-    # Feature 2: Wrist velocity right before release
-    # We look back up to 5 frames before the release
-    lookback = max(0, release_idx - 5)
-    past_row = df.loc[lookback]
+        return None # Discard throw if primary landmarks are missing
+    # --- VIEW-INVARIANT FEATURES ---
+    # Since cameras can be at any horizontal angle (e.g., Left 45 or Right 45), 
+    # horizontal X-coordinates and absolute 2D angles are highly distorted. 
+    # However, vertical Y-coordinates (heights) are much more consistent across any level camera!
     
-    dt = release_row['time_sec'] - past_row['time_sec']
-    if dt > 0:
-        wrist_vel_x = (release_row[f'{prefix}wrist_x'] - past_row[f'{prefix}wrist_x']) / dt
-        wrist_vel_y = (release_row[f'{prefix}wrist_y'] - past_row[f'{prefix}wrist_y']) / dt
-    else:
-        wrist_vel_x, wrist_vel_y = 0, 0
+    # 1. Vertical Extension at Release (How high is the wrist above the shoulder?)
+    # Since Y goes down in images, a higher wrist means a smaller Y. 
+    # Distance = shoulder_y - wrist_y
+    vertical_extension = shoulder_pt[1] - wrist_pt[1]
+    
+    # 2. Leg Vertical Extension (How straight are the legs? hip_y - knee_y)
+    leg_extension = knee_pt[1] - hip_pt[1]
+    
+    # 3. Vertical Dip Depth (Lowest point of the wrist vs. Release point)
+    # The lowest physical point means the highest Y value
+    max_wrist_y = df[f'{prefix}wrist_y'].max()
+    dip_depth = max_wrist_y - release_row[f'{prefix}wrist_y']
+    
+    # 4. Vertical Velocities leading up to release (We ignore X velocity as it's view-dependent)
+    velocities_y = []
+    start_idx = max(0, release_idx - 5)
+    for i in range(start_idx, release_idx):
+        if i not in df.index or (i+1) not in df.index:
+            continue
+        row1 = df.loc[i]
+        row2 = df.loc[i+1]
+        dt = row2['time_sec'] - row1['time_sec']
+        if dt > 0:
+            vy = (row2[f'{prefix}wrist_y'] - row1[f'{prefix}wrist_y']) / dt
+            velocities_y.append(vy)
+
+    if len(velocities_y) > 0:
+        max_upward_vel_y = min(velocities_y) if min(velocities_y) < 0 else max(velocities_y) 
+        mean_vel_y = np.mean(velocities_y)
         
-    # Compile features into a dictionary
+        if len(velocities_y) >= 2:
+            dt_total = release_row['time_sec'] - df.loc[start_idx]['time_sec']
+            accel_y = (velocities_y[-1] - velocities_y[0]) / dt_total if dt_total > 0 else 0
+        else:
+            accel_y = 0
+    else:
+        max_upward_vel_y, mean_vel_y, accel_y = 0, 0, 0
+    
+    # Compile features into a dictionary (dropping view-dependent angles like elbow_angle)
     features = {
-        'elbow_angle_release': elbow_angle,
-        'shoulder_angle_release': shoulder_angle,
-        'knee_angle_release': knee_angle,
-        'wrist_vel_x': wrist_vel_x,
-        'wrist_vel_y': wrist_vel_y,
+        'vertical_extension_release': vertical_extension,
+        'leg_extension_release': leg_extension,
+        'dip_depth': dip_depth,
+        'max_upward_vel_y': max_upward_vel_y,
+        'mean_vel_y': mean_vel_y,
+        'accel_y': accel_y
     }
     return features
 
@@ -120,18 +143,35 @@ def train(data_dir, model_save_path):
         
     print(f"Found {len(X)} annotated throws ({sum(y)} hits, {len(y)-sum(y)} misses).")
     
-    # Using Random Forest as it's robust and prevents overfitting on small datasets
-    clf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+    # Set up the Random Forest with balanced class weights
+    base_clf = RandomForestClassifier(class_weight='balanced', random_state=42)
     
-    # If we have enough data, perform cross-validation to give the user a performance estimate
-    if len(X) >= 5:
-        cv_folds = min(5, len(X))
-        # Ensure we have at least 1 of each class in folds if possible
-        if len(set(y)) > 1:
-            scores = cross_val_score(clf, X, y, cv=cv_folds, scoring='accuracy')
-            print(f"Cross-Validation Accuracy: {np.mean(scores)*100:.2f}% (+/- {np.std(scores)*100:.2f}%)")
-        
-    clf.fit(X, y)
+    # Define the Hyperparameter Grid to search
+    param_grid = {
+        'n_estimators': [50, 100, 200],      # Number of trees in the forest
+        'max_depth': [3, 5, 10, None],       # Maximum depth of the trees
+        'min_samples_split': [2, 5, 10],     # Min samples required to split an internal node
+        'min_samples_leaf': [1, 2, 4]        # Min samples required to be at a leaf node
+    }
+    
+    print("\nRunning Hyperparameter Tuning (Grid Search)...")
+    grid_search = GridSearchCV(
+        estimator=base_clf,
+        param_grid=param_grid,
+        cv=5,               # 5-fold cross-validation
+        scoring='accuracy', # We are optimizing for overall accuracy
+        n_jobs=-1,          # Use all CPU cores to speed up the search
+        verbose=1           # Print progress
+    )
+    
+    # Fit the grid search to the data
+    grid_search.fit(X, y)
+    
+    # Extract the absolute best model it found
+    clf = grid_search.best_estimator_
+    
+    print(f"\nBest Parameters Found: {grid_search.best_params_}")
+    print(f"Best Cross-Validation Accuracy: {grid_search.best_score_*100:.2f}%")
     
     # Display Feature Importances
     importances = clf.feature_importances_

@@ -5,228 +5,283 @@ import argparse
 import pandas as pd
 import numpy as np
 import pickle
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 
-def calculate_angle(a, b, c):
-    """Calculate angle between points A, B, C with vertex at B."""
-    radians = math.atan2(c[1]-b[1], c[0]-b[0]) - math.atan2(a[1]-b[1], a[0]-b[0])
-    angle = math.degrees(radians)
-    angle = angle % 360
-    if angle > 180.0:
-        angle = 360 - angle
-    return angle
+# Number of timesteps to resample every throw to (fixed-length representation)
+N_TIMESTEPS = 30
+
+# Joints whose Y-trajectory we feed into the model.
+# These are the ones most relevant to shooting mechanics.
+TRAJECTORY_JOINTS = ['wrist', 'elbow', 'shoulder', 'hip', 'knee']
+
 
 def extract_features(csv_path):
+    """Extract view-invariant time-series features from a single throw CSV.
+
+    Instead of summarizing a throw as 5-6 numbers at the release frame, we
+    resample the full vertical (Y) trajectory of key joints into a fixed-length
+    vector. This preserves the *shape* of the motion — the wind-up, the peak,
+    and the release timing — which single-frame snapshots lose entirely.
+
+    We intentionally ignore X-coordinates because they change drastically
+    depending on the camera's horizontal angle.
+    """
     df = pd.read_csv(csv_path)
-    if len(df) == 0:
-        return None
-    
-    # Identify the release frame
-    release_rows = df[df['released'] == True]
-    if len(release_rows) > 0:
-        release_idx = release_rows.index[0]
-    else:
-        # Fallback: if no release frame is marked, use the frame where the shooting wrist is highest 
-        # Note: in image coordinates, Y goes down, so highest wrist = minimum Y
-        hand = df['handedness'].iloc[-1]
-        if hand == 'Right':
-            release_idx = df['right_wrist_y'].idxmin()
-        else:
-            release_idx = df['left_wrist_y'].idxmin()
-
-    if pd.isna(release_idx):
+    if len(df) < 5:
         return None
 
-    release_row = df.loc[release_idx]
-    handedness = release_row['handedness']
-    if pd.isna(handedness) or handedness == 'Unknown':
-        handedness = 'Right' # default fallback
-        
-    prefix = 'right_' if handedness == 'Right' else 'left_'
-    
-    # Helper to extract a tuple of (x,y) for a joint
-    def get_pt(row, joint):
-        return (row[f'{prefix}{joint}_x'], row[f'{prefix}{joint}_y'])
-        
-    try:
-        shoulder_pt = get_pt(release_row, 'shoulder')
-        wrist_pt = get_pt(release_row, 'wrist')
-        hip_pt = get_pt(release_row, 'hip')
-        knee_pt = get_pt(release_row, 'knee')
-    except Exception:
-        return None # Discard throw if primary landmarks are missing
-    # --- VIEW-INVARIANT FEATURES ---
-    # Since cameras can be at any horizontal angle (e.g., Left 45 or Right 45), 
-    # horizontal X-coordinates and absolute 2D angles are highly distorted. 
-    # However, vertical Y-coordinates (heights) are much more consistent across any level camera!
-    
-    # 1. Vertical Extension at Release (How high is the wrist above the shoulder?)
-    # Since Y goes down in images, a higher wrist means a smaller Y. 
-    # Distance = shoulder_y - wrist_y
-    vertical_extension = shoulder_pt[1] - wrist_pt[1]
-    
-    # 2. Leg Vertical Extension (How straight are the legs? hip_y - knee_y)
-    leg_extension = knee_pt[1] - hip_pt[1]
-    
-    # 3. Vertical Dip Depth (Lowest point of the wrist vs. Release point)
-    # The lowest physical point means the highest Y value
-    max_wrist_y = df[f'{prefix}wrist_y'].max()
-    dip_depth = max_wrist_y - release_row[f'{prefix}wrist_y']
-    
-    # 4. Vertical Velocities leading up to release (We ignore X velocity as it's view-dependent)
-    velocities_y = []
-    start_idx = max(0, release_idx - 5)
-    for i in range(start_idx, release_idx):
-        if i not in df.index or (i+1) not in df.index:
-            continue
-        row1 = df.loc[i]
-        row2 = df.loc[i+1]
-        dt = row2['time_sec'] - row1['time_sec']
-        if dt > 0:
-            vy = (row2[f'{prefix}wrist_y'] - row1[f'{prefix}wrist_y']) / dt
-            velocities_y.append(vy)
+    # Determine shooting hand
+    hand = df['handedness'].iloc[-1]
+    if pd.isna(hand) or hand == 'Unknown':
+        hand = 'Right'
+    prefix = 'right_' if hand == 'Right' else 'left_'
 
-    if len(velocities_y) > 0:
-        max_upward_vel_y = min(velocities_y) if min(velocities_y) < 0 else max(velocities_y) 
-        mean_vel_y = np.mean(velocities_y)
-        
-        if len(velocities_y) >= 2:
-            dt_total = release_row['time_sec'] - df.loc[start_idx]['time_sec']
-            accel_y = (velocities_y[-1] - velocities_y[0]) / dt_total if dt_total > 0 else 0
-        else:
-            accel_y = 0
+    features = {}
+
+    # --- 1. Resampled Y-trajectories (the bulk of the feature vector) ---
+    # Resample each joint's vertical position to N_TIMESTEPS evenly-spaced points.
+    # This makes throws of different durations directly comparable.
+    x_orig = np.linspace(0, 1, len(df))
+    x_new = np.linspace(0, 1, N_TIMESTEPS)
+
+    for joint in TRAJECTORY_JOINTS:
+        col = f'{prefix}{joint}_y'
+        if col not in df.columns:
+            return None
+        vals = pd.to_numeric(df[col], errors='coerce').values
+        if np.all(np.isnan(vals)):
+            return None
+        # Forward-fill then back-fill NaNs (from missing detections)
+        mask = np.isnan(vals)
+        if mask.any():
+            valid = np.where(~mask)[0]
+            if len(valid) == 0:
+                return None
+            vals = np.interp(np.arange(len(vals)), valid, vals[valid])
+
+        resampled = np.interp(x_new, x_orig, vals)
+        for t in range(N_TIMESTEPS):
+            features[f'{joint}_y_t{t:02d}'] = resampled[t]
+
+    # --- 2. Summary statistics over the trajectory ---
+    wrist_y = pd.to_numeric(df[f'{prefix}wrist_y'], errors='coerce').values
+    mask = ~np.isnan(wrist_y)
+    if mask.sum() < 3:
+        return None
+    wrist_y_clean = wrist_y[mask]
+
+    # Range of motion (total vertical travel of the wrist)
+    features['wrist_y_range'] = float(np.ptp(wrist_y_clean))
+
+    # Position of the peak (what fraction of the throw is the wrist at its highest?)
+    # In image coords, highest = most negative Y
+    peak_idx = np.argmin(wrist_y_clean)
+    features['wrist_peak_position'] = peak_idx / len(wrist_y_clean)
+
+    # Smoothness: mean absolute second derivative (jerk proxy)
+    if len(wrist_y_clean) >= 3:
+        d2 = np.diff(wrist_y_clean, n=2)
+        features['wrist_smoothness'] = float(np.mean(np.abs(d2)))
     else:
-        max_upward_vel_y, mean_vel_y, accel_y = 0, 0, 0
-    
-    # Compile features into a dictionary (dropping view-dependent angles like elbow_angle)
-    features = {
-        'vertical_extension_release': vertical_extension,
-        'leg_extension_release': leg_extension,
-        'dip_depth': dip_depth,
-        'max_upward_vel_y': max_upward_vel_y,
-        'mean_vel_y': mean_vel_y,
-        'accel_y': accel_y
-    }
+        features['wrist_smoothness'] = 0.0
+
+    # Velocity at the peak (how fast is the wrist moving at its highest point?)
+    if peak_idx > 0 and peak_idx < len(wrist_y_clean) - 1:
+        features['wrist_vel_at_peak'] = float(wrist_y_clean[peak_idx + 1] - wrist_y_clean[peak_idx - 1]) / 2.0
+    else:
+        features['wrist_vel_at_peak'] = 0.0
+
+    # Asymmetry: how different is the upward phase from the downward phase
+    if peak_idx > 2 and peak_idx < len(wrist_y_clean) - 2:
+        up_len = peak_idx
+        down_len = len(wrist_y_clean) - peak_idx - 1
+        features['phase_asymmetry'] = up_len / (up_len + down_len)
+    else:
+        features['phase_asymmetry'] = 0.5
+
     return features
 
+
 def build_dataset(data_dir):
+    """Scan data_dir for annotated CSVs and build feature matrix + labels."""
     X = []
     y = []
-    # Recursively find all CSVs in the data directory
+    skipped = 0
     files = glob.glob(os.path.join(data_dir, '**', '*.csv'), recursive=True)
-    
+
+    feat_names = None
     for f in files:
         basename = os.path.basename(f)
         label = None
         if basename.endswith('-h.csv'):
-            label = 1 # Hit
+            label = 1  # Hit
         elif basename.endswith('-m.csv'):
-            label = 0 # Miss
-            
+            label = 0  # Miss
+
         if label is not None:
             feats = extract_features(f)
             if feats is not None:
+                if feat_names is None:
+                    feat_names = list(feats.keys())
                 X.append(list(feats.values()))
                 y.append(label)
-                
-    feat_names = list(feats.keys()) if len(X) > 0 else []
+            else:
+                skipped += 1
+
+    if skipped > 0:
+        print(f"  (Skipped {skipped} files due to missing/bad data)")
+
+    feat_names = feat_names if feat_names else []
     return np.array(X), np.array(y), feat_names
+
 
 def train(data_dir, model_save_path):
     print(f"Scanning '{data_dir}' for annotated CSVs (ending in '-h.csv' or '-m.csv')...")
     X, y, feat_names = build_dataset(data_dir)
-    
+
     if len(X) == 0:
-        print("No annotated data found! Please rename your CSVs to end with '-h.csv' for hits or '-m.csv' for misses.")
+        print("No annotated data found! Rename CSVs to end with '-h.csv' (hit) or '-m.csv' (miss).")
         return
-        
-    print(f"Found {len(X)} annotated throws ({sum(y)} hits, {len(y)-sum(y)} misses).")
-    
-    # Set up the Random Forest with balanced class weights
-    base_clf = RandomForestClassifier(class_weight='balanced', random_state=42)
-    
-    # Define the Hyperparameter Grid to search
-    param_grid = {
-        'n_estimators': [50, 100, 200],      # Number of trees in the forest
-        'max_depth': [3, 5, 10, None],       # Maximum depth of the trees
-        'min_samples_split': [2, 5, 10],     # Min samples required to split an internal node
-        'min_samples_leaf': [1, 2, 4]        # Min samples required to be at a leaf node
+
+    n_hits = int(sum(y))
+    n_misses = len(y) - n_hits
+    print(f"Found {len(X)} usable throws ({n_hits} hits, {n_misses} misses), {len(feat_names)} features each.")
+
+    # --- Model candidates ---
+    # We try two fundamentally different tree ensemble strategies:
+    #
+    # 1. Random Forest: builds many independent trees and averages their votes.
+    #    Good baseline, resistant to overfitting.
+    #
+    # 2. Histogram Gradient Boosting: builds trees *sequentially*, where each
+    #    new tree specifically targets the mistakes of the previous ones.
+    #    Better at extracting weak signals, which is exactly our situation.
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    models = {
+        'RandomForest': {
+            'pipeline': Pipeline([
+                ('scaler', StandardScaler()),
+                ('clf', RandomForestClassifier(class_weight='balanced', random_state=42))
+            ]),
+            'params': {
+                'clf__n_estimators': [100, 200],
+                'clf__max_depth': [5, 10, None],
+                'clf__min_samples_leaf': [1, 2, 4],
+            }
+        },
+        'GradientBoosting': {
+            'pipeline': Pipeline([
+                ('scaler', StandardScaler()),
+                ('clf', HistGradientBoostingClassifier(
+                    class_weight='balanced', random_state=42,
+                    early_stopping=True, validation_fraction=0.15,
+                    n_iter_no_change=10
+                ))
+            ]),
+            'params': {
+                'clf__max_depth': [3, 5, 7],
+                'clf__learning_rate': [0.01, 0.05, 0.1],
+                'clf__max_iter': [100, 200, 400],
+                'clf__min_samples_leaf': [1, 5, 10],
+            }
+        }
     }
-    
-    print("\nRunning Hyperparameter Tuning (Grid Search)...")
-    grid_search = GridSearchCV(
-        estimator=base_clf,
-        param_grid=param_grid,
-        cv=5,               # 5-fold cross-validation
-        scoring='accuracy', # We are optimizing for overall accuracy
-        n_jobs=-1,          # Use all CPU cores to speed up the search
-        verbose=1           # Print progress
-    )
-    
-    # Fit the grid search to the data
-    grid_search.fit(X, y)
-    
-    # Extract the absolute best model it found
-    clf = grid_search.best_estimator_
-    
-    print(f"\nBest Parameters Found: {grid_search.best_params_}")
-    print(f"Best Cross-Validation Accuracy: {grid_search.best_score_*100:.2f}%")
-    
-    # Display Feature Importances
-    importances = clf.feature_importances_
-    print("\nFeature Importances (what matters most for hit/miss):")
-    for name, imp in sorted(zip(feat_names, importances), key=lambda x: x[1], reverse=True):
-        print(f"  {name}: {imp:.4f}")
-        
-    # Save the model
+
+    best_model = None
+    best_score = 0
+    best_name = ""
+
+    for name, spec in models.items():
+        print(f"\n{'='*50}")
+        print(f"Tuning {name}...")
+        print(f"{'='*50}")
+
+        grid = GridSearchCV(
+            estimator=spec['pipeline'],
+            param_grid=spec['params'],
+            cv=cv,
+            scoring='accuracy',
+            n_jobs=-1,
+            verbose=1,
+        )
+        grid.fit(X, y)
+
+        print(f"  Best CV Accuracy: {grid.best_score_ * 100:.2f}%")
+        print(f"  Best Params: {grid.best_params_}")
+
+        if grid.best_score_ > best_score:
+            best_score = grid.best_score_
+            best_model = grid.best_estimator_
+            best_name = name
+
+    print(f"\n{'='*50}")
+    print(f"WINNER: {best_name} — {best_score * 100:.2f}% accuracy")
+    print(f"{'='*50}")
+
+    # Feature importances (only available for tree-based models)
+    clf_step = best_model.named_steps['clf']
+    if hasattr(clf_step, 'feature_importances_'):
+        importances = clf_step.feature_importances_
+        print("\nTop 15 Feature Importances:")
+        ranked = sorted(zip(feat_names, importances), key=lambda x: x[1], reverse=True)
+        for name_f, imp in ranked[:15]:
+            bar = '█' * int(imp * 200)
+            print(f"  {name_f:30s} {imp:.4f} {bar}")
+
+    # Save
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
     with open(model_save_path, 'wb') as f:
-        pickle.dump({'model': clf, 'feature_names': feat_names}, f)
-        
-    print(f"\nModel successfully saved to {model_save_path}")
+        pickle.dump({'model': best_model, 'feature_names': feat_names}, f)
+    print(f"\nModel saved to {model_save_path}")
+
 
 def predict(csv_path, model_path):
     if not os.path.exists(model_path):
-        print(f"Model not found at '{model_path}'. Please run training first.")
+        print(f"Model not found at '{model_path}'. Run training first.")
         return
-        
+
     with open(model_path, 'rb') as f:
         data = pickle.load(f)
         clf = data['model']
         feat_names = data['feature_names']
-        
+
     feats = extract_features(csv_path)
     if feats is None:
         print(f"Failed to extract features from {csv_path}.")
         return
-        
+
     X = np.array([list(feats.values())])
     pred = clf.predict(X)[0]
     prob = clf.predict_proba(X)[0]
-    
+
     result = "HIT" if pred == 1 else "MISS"
     confidence = prob[pred] * 100
-    
+
     print(f"\nPrediction for {os.path.basename(csv_path)}: {result} ({confidence:.1f}% confidence)")
-    
-    print("\nExtracted Biomechanical Features:")
-    for k, v in feats.items():
-        print(f"  {k}: {v:.2f}")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Basketball Throw Classifier (Hit/Miss)")
-    parser.add_argument('mode', choices=['train', 'predict'], help="Mode to run: 'train' on annotated data, or 'predict' on a single CSV.")
-    parser.add_argument('--data-dir', type=str, default='data', help="Directory containing CSVs (for training). Default is 'data'.")
-    parser.add_argument('--csv', type=str, help="Path to single CSV (for predicting).")
-    parser.add_argument('--model', type=str, default='models/throw_classifier.pkl', help="Path to save/load model. Default is 'models/throw_classifier.pkl'.")
-    
+    parser.add_argument('mode', choices=['train', 'predict'],
+                        help="'train' on annotated data, or 'predict' on a single CSV.")
+    parser.add_argument('--data-dir', type=str, default='data',
+                        help="Directory containing CSVs (for training).")
+    parser.add_argument('--csv', type=str,
+                        help="Path to a single CSV (for prediction).")
+    parser.add_argument('--model', type=str, default='models/throw_classifier.pkl',
+                        help="Path to save/load the model.")
+
     args = parser.parse_args()
-    
+
     if args.mode == 'train':
         train(args.data_dir, args.model)
     elif args.mode == 'predict':
         if not args.csv:
-            print("Error: Please provide a path using --csv for prediction.")
+            print("Error: provide --csv for prediction mode.")
         else:
             predict(args.csv, args.model)

@@ -11,3 +11,4 @@ models/*.engine
 *.onnx
 models/*.onnx
 *.engine
+*.zip

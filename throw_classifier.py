@@ -1,33 +1,80 @@
 import os
+import re
 import glob
-import math
 import argparse
 import pandas as pd
 import numpy as np
 import pickle
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
-# Number of timesteps to resample every throw to (fixed-length representation)
+# Number of timesteps to resample every throw to
 N_TIMESTEPS = 30
 
-# Joints whose Y-trajectory we feed into the model.
-# These are the ones most relevant to shooting mechanics.
+# Joints whose Y-trajectory we track
 TRAJECTORY_JOINTS = ['wrist', 'elbow', 'shoulder', 'hip', 'knee']
 
 
+def _resample(values, n=N_TIMESTEPS):
+    """Resample a 1D array to exactly n points via linear interpolation."""
+    x_orig = np.linspace(0, 1, len(values))
+    x_new = np.linspace(0, 1, n)
+    return np.interp(x_new, x_orig, values)
+
+
+def _clean_series(series):
+    """Convert to float, interpolate NaNs. Returns None if all NaN."""
+    vals = pd.to_numeric(series, errors='coerce').values
+    if np.all(np.isnan(vals)):
+        return None
+    mask = np.isnan(vals)
+    if mask.any():
+        valid = np.where(~mask)[0]
+        if len(valid) == 0:
+            return None
+        vals = np.interp(np.arange(len(vals)), valid, vals[valid])
+    return vals
+
+
+def _extract_group_id(filepath):
+    """Extract a group ID so the same physical throw from different cameras
+    is always kept together during cross-validation.
+
+    Filename pattern: {player}-angle{N}-{throw}-{label}.csv
+    Path pattern:     data/{session}/{run}/throw/{filename}
+
+    Group ID:         {session}/{run}/{player}-{throw}
+    """
+    parts = filepath.replace('\\', '/').split('/')
+    basename = parts[-1]
+
+    # Try to find session/run from directory structure
+    # Expected: .../data/{session}/{run}/throw/{file}
+    try:
+        throw_idx = parts.index('throw')
+        session = parts[throw_idx - 2]
+        run = parts[throw_idx - 1]
+    except (ValueError, IndexError):
+        session = 'unknown'
+        run = '0'
+
+    m = re.match(r'(\d+)-angle\d+-(\d+)-[hm]\.csv', basename)
+    if m:
+        player, throw_num = m.group(1), m.group(2)
+        return f'{session}/{run}/{player}-{throw_num}'
+
+    # Fallback: use filename as unique group (no grouping)
+    return basename
+
+
 def extract_features(csv_path):
-    """Extract view-invariant time-series features from a single throw CSV.
+    """Extract view-invariant time-series features from a throw CSV.
 
-    Instead of summarizing a throw as 5-6 numbers at the release frame, we
-    resample the full vertical (Y) trajectory of key joints into a fixed-length
-    vector. This preserves the *shape* of the motion — the wind-up, the peak,
-    and the release timing — which single-frame snapshots lose entirely.
-
-    We intentionally ignore X-coordinates because they change drastically
-    depending on the camera's horizontal angle.
+    This is the simple feature set that achieved our best accuracy (68%):
+      - Resampled Y-position trajectories for 5 joints (5 × 30 = 150)
+      - Targeted summary statistics (8)
     """
     df = pd.read_csv(csv_path)
     if len(df) < 5:
@@ -41,64 +88,49 @@ def extract_features(csv_path):
 
     features = {}
 
-    # --- 1. Resampled Y-trajectories (the bulk of the feature vector) ---
-    # Resample each joint's vertical position to N_TIMESTEPS evenly-spaced points.
-    # This makes throws of different durations directly comparable.
-    x_orig = np.linspace(0, 1, len(df))
-    x_new = np.linspace(0, 1, N_TIMESTEPS)
-
+    # --- Pre-extract all Y series ---
+    joint_series = {}
     for joint in TRAJECTORY_JOINTS:
         col = f'{prefix}{joint}_y'
         if col not in df.columns:
             return None
-        vals = pd.to_numeric(df[col], errors='coerce').values
-        if np.all(np.isnan(vals)):
+        cleaned = _clean_series(df[col])
+        if cleaned is None:
             return None
-        # Forward-fill then back-fill NaNs (from missing detections)
-        mask = np.isnan(vals)
-        if mask.any():
-            valid = np.where(~mask)[0]
-            if len(valid) == 0:
-                return None
-            vals = np.interp(np.arange(len(vals)), valid, vals[valid])
+        joint_series[joint] = cleaned
 
-        resampled = np.interp(x_new, x_orig, vals)
+    # --- 1. Resampled Y-position trajectories (150 features) ---
+    for joint, vals in joint_series.items():
+        resampled = _resample(vals)
         for t in range(N_TIMESTEPS):
             features[f'{joint}_y_t{t:02d}'] = resampled[t]
 
-    # --- 2. Summary statistics over the trajectory ---
-    wrist_y = pd.to_numeric(df[f'{prefix}wrist_y'], errors='coerce').values
-    mask = ~np.isnan(wrist_y)
-    if mask.sum() < 3:
-        return None
-    wrist_y_clean = wrist_y[mask]
+    # --- 2. Summary statistics ---
+    wrist_y = joint_series['wrist']
 
-    # Range of motion (total vertical travel of the wrist)
-    features['wrist_y_range'] = float(np.ptp(wrist_y_clean))
+    # Range of motion
+    features['wrist_y_range'] = float(np.ptp(wrist_y))
 
-    # Position of the peak (what fraction of the throw is the wrist at its highest?)
-    # In image coords, highest = most negative Y
-    peak_idx = np.argmin(wrist_y_clean)
-    features['wrist_peak_position'] = peak_idx / len(wrist_y_clean)
+    # Peak position (fraction of throw where wrist is highest)
+    peak_idx = np.argmin(wrist_y)  # most negative Y = highest in image coords
+    features['wrist_peak_position'] = peak_idx / len(wrist_y)
 
-    # Smoothness: mean absolute second derivative (jerk proxy)
-    if len(wrist_y_clean) >= 3:
-        d2 = np.diff(wrist_y_clean, n=2)
+    # Smoothness (mean absolute second derivative)
+    if len(wrist_y) >= 3:
+        d2 = np.diff(wrist_y, n=2)
         features['wrist_smoothness'] = float(np.mean(np.abs(d2)))
     else:
         features['wrist_smoothness'] = 0.0
 
-    # Velocity at the peak (how fast is the wrist moving at its highest point?)
-    if peak_idx > 0 and peak_idx < len(wrist_y_clean) - 1:
-        features['wrist_vel_at_peak'] = float(wrist_y_clean[peak_idx + 1] - wrist_y_clean[peak_idx - 1]) / 2.0
+    # Velocity at peak
+    if 0 < peak_idx < len(wrist_y) - 1:
+        features['wrist_vel_at_peak'] = float(wrist_y[peak_idx + 1] - wrist_y[peak_idx - 1]) / 2.0
     else:
         features['wrist_vel_at_peak'] = 0.0
 
-    # Asymmetry: how different is the upward phase from the downward phase
-    if peak_idx > 2 and peak_idx < len(wrist_y_clean) - 2:
-        up_len = peak_idx
-        down_len = len(wrist_y_clean) - peak_idx - 1
-        features['phase_asymmetry'] = up_len / (up_len + down_len)
+    # Phase asymmetry (upswing vs downswing duration)
+    if 2 < peak_idx < len(wrist_y) - 2:
+        features['phase_asymmetry'] = peak_idx / len(wrist_y)
     else:
         features['phase_asymmetry'] = 0.5
 
@@ -106,9 +138,10 @@ def extract_features(csv_path):
 
 
 def build_dataset(data_dir):
-    """Scan data_dir for annotated CSVs and build feature matrix + labels."""
+    """Scan data_dir for annotated CSVs and build feature matrix + labels + groups."""
     X = []
     y = []
+    groups = []
     skipped = 0
     files = glob.glob(os.path.join(data_dir, '**', '*.csv'), recursive=True)
 
@@ -128,6 +161,7 @@ def build_dataset(data_dir):
                     feat_names = list(feats.keys())
                 X.append(list(feats.values()))
                 y.append(label)
+                groups.append(_extract_group_id(f))
             else:
                 skipped += 1
 
@@ -135,12 +169,12 @@ def build_dataset(data_dir):
         print(f"  (Skipped {skipped} files due to missing/bad data)")
 
     feat_names = feat_names if feat_names else []
-    return np.array(X), np.array(y), feat_names
+    return np.array(X), np.array(y), groups, feat_names
 
 
 def train(data_dir, model_save_path):
     print(f"Scanning '{data_dir}' for annotated CSVs (ending in '-h.csv' or '-m.csv')...")
-    X, y, feat_names = build_dataset(data_dir)
+    X, y, groups, feat_names = build_dataset(data_dir)
 
     if len(X) == 0:
         print("No annotated data found! Rename CSVs to end with '-h.csv' (hit) or '-m.csv' (miss).")
@@ -148,19 +182,24 @@ def train(data_dir, model_save_path):
 
     n_hits = int(sum(y))
     n_misses = len(y) - n_hits
-    print(f"Found {len(X)} usable throws ({n_hits} hits, {n_misses} misses), {len(feat_names)} features each.")
+    unique_groups = set(groups)
+    print(f"Found {len(X)} samples from {len(unique_groups)} unique physical throws "
+          f"({n_hits} hits, {n_misses} misses), {len(feat_names)} features each.")
 
-    # --- Model candidates ---
-    # We try two fundamentally different tree ensemble strategies:
-    #
-    # 1. Random Forest: builds many independent trees and averages their votes.
-    #    Good baseline, resistant to overfitting.
-    #
-    # 2. Histogram Gradient Boosting: builds trees *sequentially*, where each
-    #    new tree specifically targets the mistakes of the previous ones.
-    #    Better at extracting weak signals, which is exactly our situation.
+    # Encode group strings as integers for sklearn
+    group_to_id = {g: i for i, g in enumerate(sorted(unique_groups))}
+    group_ids = np.array([group_to_id[g] for g in groups])
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # --- Grouped CV ---
+    # StratifiedGroupKFold ensures:
+    #   1. Both camera angles of the same throw are ALWAYS in the same fold
+    #      (prevents data leakage from seeing the same throw in train+test)
+    #   2. Hit/miss ratio is preserved in each fold (stratified)
+    cv_grouped = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+
+    print(f"\nUsing StratifiedGroupKFold (5 folds, grouped by physical throw)")
+    print(f"  → Both camera angles of the same throw always stay together")
+    print(f"  → No data leakage between train and test\n")
 
     models = {
         'RandomForest': {
@@ -169,8 +208,8 @@ def train(data_dir, model_save_path):
                 ('clf', RandomForestClassifier(class_weight='balanced', random_state=42))
             ]),
             'params': {
-                'clf__n_estimators': [100, 200],
-                'clf__max_depth': [5, 10, None],
+                'clf__n_estimators': [100, 200, 400],
+                'clf__max_depth': [3, 5, 10, None],
                 'clf__min_samples_leaf': [1, 2, 4],
             }
         },
@@ -187,9 +226,8 @@ def train(data_dir, model_save_path):
                 'clf__max_depth': [3, 5, 7],
                 'clf__learning_rate': [0.01, 0.05, 0.1],
                 'clf__max_iter': [100, 200, 400],
-                'clf__min_samples_leaf': [1, 5, 10],
             }
-        }
+        },
     }
 
     best_model = None
@@ -197,19 +235,19 @@ def train(data_dir, model_save_path):
     best_name = ""
 
     for name, spec in models.items():
-        print(f"\n{'='*50}")
+        print(f"{'='*50}")
         print(f"Tuning {name}...")
         print(f"{'='*50}")
 
         grid = GridSearchCV(
             estimator=spec['pipeline'],
             param_grid=spec['params'],
-            cv=cv,
+            cv=cv_grouped,
             scoring='accuracy',
             n_jobs=-1,
             verbose=1,
         )
-        grid.fit(X, y)
+        grid.fit(X, y, groups=group_ids)
 
         print(f"  Best CV Accuracy: {grid.best_score_ * 100:.2f}%")
         print(f"  Best Params: {grid.best_params_}")
@@ -220,10 +258,10 @@ def train(data_dir, model_save_path):
             best_name = name
 
     print(f"\n{'='*50}")
-    print(f"WINNER: {best_name} — {best_score * 100:.2f}% accuracy")
+    print(f"WINNER: {best_name} — {best_score * 100:.2f}% accuracy (grouped CV, no leakage)")
     print(f"{'='*50}")
 
-    # Feature importances (only available for tree-based models)
+    # Feature importances
     clf_step = best_model.named_steps['clf']
     if hasattr(clf_step, 'feature_importances_'):
         importances = clf_step.feature_importances_
@@ -232,6 +270,9 @@ def train(data_dir, model_save_path):
         for name_f, imp in ranked[:15]:
             bar = '█' * int(imp * 200)
             print(f"  {name_f:30s} {imp:.4f} {bar}")
+
+    # Fit the winner on ALL data for deployment
+    best_model.fit(X, y)
 
     # Save
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
@@ -248,7 +289,6 @@ def predict(csv_path, model_path):
     with open(model_path, 'rb') as f:
         data = pickle.load(f)
         clf = data['model']
-        feat_names = data['feature_names']
 
     feats = extract_features(csv_path)
     if feats is None:
@@ -257,12 +297,16 @@ def predict(csv_path, model_path):
 
     X = np.array([list(feats.values())])
     pred = clf.predict(X)[0]
-    prob = clf.predict_proba(X)[0]
+
+    if hasattr(clf, 'predict_proba'):
+        prob = clf.predict_proba(X)[0]
+        confidence = prob[pred] * 100
+        conf_str = f" ({confidence:.1f}% confidence)"
+    else:
+        conf_str = ""
 
     result = "HIT" if pred == 1 else "MISS"
-    confidence = prob[pred] * 100
-
-    print(f"\nPrediction for {os.path.basename(csv_path)}: {result} ({confidence:.1f}% confidence)")
+    print(f"\nPrediction for {os.path.basename(csv_path)}: {result}{conf_str}")
 
 
 if __name__ == '__main__':

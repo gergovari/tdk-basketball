@@ -13,8 +13,14 @@ class ThreadedVideoCapture:
         self.q = queue.Queue(maxsize=128)
         self.stopped = False
         self.lock = threading.Lock()
+        self.resize_to = None
         self.t = threading.Thread(target=self._reader, daemon=True)
         self.t.start()
+        
+    def set_resize(self, size):
+        self.resize_to = size
+        with self.q.mutex:
+            self.q.queue.clear()
 
     def _reader(self):
         while not self.stopped:
@@ -25,6 +31,10 @@ class ThreadedVideoCapture:
                     self.q.put((False, None))
                     self.stopped = True
                     break
+                    
+                if self.resize_to is not None:
+                    frame = cv2.resize(frame, self.resize_to)
+                    
                 self.q.put((True, frame))
             else:
                 time.sleep(0.005)
@@ -94,6 +104,8 @@ class Video:
                 os.remove(self.output_video_path)
 
         self.Scale = new_scale
+        if hasattr(self.cap, 'set_resize'):
+            self.cap.set_resize(self.size if self.scale != 1.0 else None)
 
         self.out = cv2.VideoWriter(
             self.output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), self.fps, self.size
@@ -141,7 +153,8 @@ class Video:
         if self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
-                return frame if self.scale == 1.0 else cv2.resize(frame, self.size)
+                # Frame is already resized by the background thread if applicable!
+                return frame
         raise StopIteration
 
     def __getitem__(self, index):
@@ -151,4 +164,7 @@ class Video:
         ret, frame = self.cap.read()
         if not ret:
             raise IndexError("Failed to read video frame")
-        return frame if self.scale == 1.0 else cv2.resize(frame, self.size)
+        # For __getitem__, we might need to manually resize if the queue didn't catch it
+        if self.scale != 1.0 and frame.shape[:2] != self.size[::-1]:
+            frame = cv2.resize(frame, self.size)
+        return frame

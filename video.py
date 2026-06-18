@@ -9,7 +9,14 @@ class ThreadedVideoCapture:
     This prevents CPU decoding from blocking the GPU inference, significantly boosting FPS.
     """
     def __init__(self, src):
-        self.cap = cv2.VideoCapture(src)
+        try:
+            self.cap = cv2.VideoCapture(src, cv2.CAP_ANY, [
+                cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY
+            ])
+            if not self.cap.isOpened():
+                raise Exception()
+        except:
+            self.cap = cv2.VideoCapture(src)
         self.q = queue.Queue(maxsize=128)
         self.stopped = False
         self.lock = threading.Lock()

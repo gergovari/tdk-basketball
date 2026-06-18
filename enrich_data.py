@@ -1,5 +1,6 @@
 import argparse
 import os
+os.environ["OPENCV_FFMPEG_THREADS"] = "8"
 from pathlib import Path
 
 from ml import YOLOPose

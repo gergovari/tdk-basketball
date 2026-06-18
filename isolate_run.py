@@ -16,6 +16,7 @@ from pipeline import (
 
 import argparse
 import os
+os.environ["OPENCV_FFMPEG_THREADS"] = "8"
 
 
 def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=0.0, enable_fallback=False):

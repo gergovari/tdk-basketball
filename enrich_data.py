@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--min-kp-conf', type=float, default=0.3, help="Minimum keypoint confidence to keep a landmark (0=off, default: 0.3)")
     parser.add_argument('--min-keypoints', type=int, default=6, help="Minimum number of valid landmarks to accept a skeleton (0=off, default: 6)")
     parser.add_argument('--lowpass', type=float, default=0.4, help="Low-pass filter strength on keypoint positions (0=off, 0.8=heavy, default: 0.4)")
+    parser.add_argument('--follow-through', type=float, default=1.5, help="Seconds to record after the release (default: 1.5)")
     args = parser.parse_args()
 
     data_dir = Path(args.data_folder)
@@ -87,7 +88,8 @@ def main():
             max_throws=args.max_throws,
             min_kp_conf=args.min_kp_conf,
             min_keypoints=args.min_keypoints,
-            lowpass=args.lowpass
+            lowpass=args.lowpass,
+            follow_through=args.follow_through
         )
 
     print("==================================================")

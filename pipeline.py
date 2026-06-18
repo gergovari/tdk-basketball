@@ -359,25 +359,6 @@ def refine_thrower_skeleton(video: Video, obj_frames, thrower_id, yolo_pose: YOL
         cv2.destroyWindow("Skeleton Tracking")
     return obj_frames
 
-def cut_after_release(obj_frames, detectors, fps):
-    earliest = -1
-    earliest_detector = ""
-    for d in detectors:
-        idx = d.detect(obj_frames, fps)
-        if idx != -1 and (earliest == -1 or idx < earliest):
-            earliest = idx
-            earliest_detector = d.__class__.__name__
-
-    if earliest != -1:
-        cut = obj_frames[: earliest + 1]
-        last = list(cut[-1])
-
-        for _ in range(3 * fps):
-            cut.append(last)
-
-        return cut, earliest, earliest_detector
-    return obj_frames, -1, ""
-
 def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name="", output_height=720.0):
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if orig_height > 0:
@@ -394,8 +375,6 @@ def render_video(video: Video, obj_frames, release_frame=-1, release_detector_na
     
     for i, obj_frame in enumerate(obj_frames):
         frame_idx = min(i, len(video) - 1)
-        if release_frame != -1:
-            frame_idx = min(frame_idx, release_frame)
 
         try:
             if frame_idx >= current_cap_idx:
@@ -478,8 +457,6 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
             print(f"\rRendering frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%){eta_str}", end="", flush=True)
             
         frame_idx = start_frame + i
-        if release_frame != -1 and frame_idx > release_frame:
-            frame_idx = release_frame
             
         if valid_frames is not None and frame_idx not in valid_frames:
             continue
@@ -522,8 +499,8 @@ def render_throw_video(input_video_path, output_video_path, obj_frames, start_fr
                 for prep, rel in cycles:
                     if prep <= frame_idx < rel:
                         status_text = "PREPARE"
-                    elif frame_idx == rel:
-                        status_text = "RELEASE"
+                    elif frame_idx >= rel:
+                        status_text = "RELEASED"
             elif is_released:
                 status_text = "RELEASED"
                 

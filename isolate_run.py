@@ -5,8 +5,7 @@ from video import Video
 from ml import YOLOPose
 from detectors import (
     BiggestPersonThrowerDetector,
-    SkeletonReleaseDetector,
-    SkeletonPrepareDetector,
+    ThrowCycleDetector,
 )
 from pipeline import (
     extract_obj_frames,
@@ -19,7 +18,7 @@ import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4):
+def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=1.5):
     if not os.path.isfile(input_video_path):
         print(f"Error: Video file not found: {input_video_path}")
         return
@@ -110,62 +109,16 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
     print("Tracked!")
 
     print("Detecting prepare-release cycles...")
-    prep_detector = SkeletonPrepareDetector()
-    rel_detector = SkeletonReleaseDetector()
-
-    cycles = []
-    curr_frame = first_thrower_frame
-    prepares_found = 0
-    releases_found = 0
-
-    while curr_frame <= last_thrower_frame:
-        if max_throws is not None and len(cycles) >= max_throws:
-            break
-        # 1. Search forward to find any prepare phase (this naturally skips the previous shot's follow-through)
-        prep_forward = prep_detector.detect(obj_frames, video.fps, start_idx=curr_frame)
-        if prep_forward == -1:
-            break
-            
-        # 2. Find the release that follows
-        rel_frame = rel_detector.detect(obj_frames, video.fps, start_idx=prep_forward)
-        if rel_frame != -1:
-            releases_found += 1
-        else:
-            break
-            
-        # 3. Search backward from the release to find the exact peak of the dip
-        prep_frame = prep_detector.detect_backward(obj_frames, video.fps, start_idx=prep_forward, end_idx=rel_frame)
-        if prep_frame != -1:
-            # Add a 0.5 second lead-up to show the full downward motion before the peak dip
-            prep_frame = max(0, prep_frame - int(video.fps * 0.5))
-            prepares_found += 1
-        else:
-            # Fallback in case a perfect prepare phase isn't found
-            prep_frame = max(prep_forward, rel_frame - int(1.5 * video.fps))
-            prepares_found += 1
-
-        cycles.append((prep_frame, rel_frame))
-        curr_frame = rel_frame + 1
+    cycle_detector = ThrowCycleDetector(follow_through_seconds=follow_through)
+    cycles, prepares_found, releases_found = cycle_detector.detect(
+        obj_frames, 
+        video.fps, 
+        first_thrower_frame, 
+        last_thrower_frame, 
+        max_throws=max_throws
+    )
 
     print(f"Found {prepares_found} prepares and {releases_found} releases, resulting in {len(cycles)} raw cycles!")
-
-    # Merge overlapping throws (e.g. pump fakes or double clutches)
-    merged_cycles = []
-    for cycle in cycles:
-        if not merged_cycles:
-            merged_cycles.append(cycle)
-        else:
-            last_prep, last_rel = merged_cycles[-1]
-            curr_prep, curr_rel = cycle
-            
-            # If the next throw starts before or very shortly after the previous release (e.g. within 1 second)
-            if curr_prep <= last_rel + int(video.fps * 1.0):
-                merged_cycles[-1] = (last_prep, curr_rel)
-            else:
-                merged_cycles.append(cycle)
-                
-    cycles = merged_cycles
-    print(f"After merging overlapping actions, we have {len(cycles)} definitive throw cycles.")
 
     video.release()
     if os.path.exists(params["output_video_path"]):
@@ -294,6 +247,9 @@ def main():
     parser.add_argument(
         '--lowpass', type=float, default=0.4, help="Low-pass filter strength on keypoint positions (0=off, 0.8=heavy, default: 0.4)"
     )
+    parser.add_argument(
+        '--follow-through', type=float, default=1.5, help="Seconds to record after the release (default: 1.5)"
+    )
     args = parser.parse_args()
 
     player_filter = ["player", "person", "human"]
@@ -302,7 +258,7 @@ def main():
     yolo_pose = YOLOPose(os.path.join(args.model_dir, args.pose_model))
     print(f"Model loaded! (device: {yolo_pose.device})\n")
 
-    process_video(args.video, args.output_path, yolo_pose, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws, min_kp_conf=args.min_kp_conf, min_keypoints=args.min_keypoints, lowpass=args.lowpass)
+    process_video(args.video, args.output_path, yolo_pose, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws, min_kp_conf=args.min_kp_conf, min_keypoints=args.min_keypoints, lowpass=args.lowpass, follow_through=args.follow_through)
     print("All done!")
 
 

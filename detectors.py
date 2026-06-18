@@ -171,6 +171,8 @@ class ReleaseDetector(ABC):
 
 @dataclass
 class SkeletonReleaseDetector(ReleaseDetector):
+    follow_through_seconds: float = 0.0
+
     def detect(self, obj_frames, fps: int, start_idx: int = 0) -> int:
         max_angle = -1
         max_frame = -1
@@ -178,6 +180,7 @@ class SkeletonReleaseDetector(ReleaseDetector):
         # We need the elbow to at least extend to 120 to consider it a real throw
         min_required_extension = 120 
         
+        raw_release = -1
         for i in range(start_idx, len(obj_frames)):
             obj_frame = obj_frames[i]
             for obj in obj_frame:
@@ -204,11 +207,17 @@ class SkeletonReleaseDetector(ReleaseDetector):
                         max_frame = i
                     elif angle != -1 and angle < max_angle - 15 and max_angle > min_required_extension:
                         # Angle has dropped significantly from the peak, meaning the stroke is over!
-                        return max_frame
+                        raw_release = max_frame
+                        break
+            if raw_release != -1:
+                break
                         
-        if max_angle > min_required_extension:
-            return max_frame
+        if raw_release == -1 and max_angle > min_required_extension:
+            raw_release = max_frame
             
+        if raw_release != -1:
+            return min(len(obj_frames) - 1, raw_release + int(fps * self.follow_through_seconds))
+
         return -1
 
 
@@ -292,3 +301,67 @@ class SkeletonPrepareDetector(ReleaseDetector):
                         return min_frame
 
         return min_frame
+
+class CycleDetector(ABC):
+    @abstractmethod
+    def detect(self, obj_frames, fps: int, first_frame: int, last_frame: int, max_throws=None):
+        pass
+
+@dataclass
+class ThrowCycleDetector(CycleDetector):
+    prep_detector: ReleaseDetector = field(default_factory=SkeletonPrepareDetector)
+    rel_detector: ReleaseDetector = field(default_factory=SkeletonReleaseDetector)
+    follow_through_seconds: float = 1.5
+
+    def detect(self, obj_frames, fps: int, first_frame: int, last_frame: int, max_throws=None):
+        cycles = []
+        curr_frame = first_frame
+        prepares_found = 0
+        releases_found = 0
+
+        if hasattr(self.rel_detector, 'follow_through_seconds'):
+            self.rel_detector.follow_through_seconds = self.follow_through_seconds
+
+        while curr_frame <= last_frame:
+            if max_throws is not None and len(cycles) >= max_throws:
+                break
+            
+            prep_forward = self.prep_detector.detect(obj_frames, fps, start_idx=curr_frame)
+            if prep_forward == -1:
+                break
+                
+            rel_frame = self.rel_detector.detect(obj_frames, fps, start_idx=prep_forward)
+            if rel_frame != -1:
+                releases_found += 1
+            else:
+                break
+                
+            if hasattr(self.prep_detector, 'detect_backward'):
+                prep_frame = self.prep_detector.detect_backward(obj_frames, fps, start_idx=prep_forward, end_idx=rel_frame)
+            else:
+                prep_frame = prep_forward
+
+            if prep_frame != -1:
+                prep_frame = max(0, prep_frame - int(fps * 0.5))
+                prepares_found += 1
+            else:
+                prep_frame = max(prep_forward, rel_frame - int(1.5 * fps))
+                prepares_found += 1
+
+            cycles.append((prep_frame, rel_frame))
+            curr_frame = rel_frame + 1
+
+        merged_cycles = []
+        for cycle in cycles:
+            if not merged_cycles:
+                merged_cycles.append(cycle)
+            else:
+                last_prep, last_rel = merged_cycles[-1]
+                curr_prep, curr_rel = cycle
+                
+                if curr_prep <= last_rel:
+                    merged_cycles[-1] = (last_prep, curr_rel)
+                else:
+                    merged_cycles.append(cycle)
+                    
+        return merged_cycles, prepares_found, releases_found

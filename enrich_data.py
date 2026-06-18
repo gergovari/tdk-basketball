@@ -12,7 +12,6 @@ def main():
     parser.add_argument("data_folder", help="Root data folder containing <experiment>/<participant>/runs/*.mp4")
     parser.add_argument("--model_dir", default="models/", help="Directory containing the model files")
     parser.add_argument("--enable-hud", action="store_true", help="Enable HUD overlays on the output video")
-    parser.add_argument("--always-split", action="store_true", help="Always output individual throw videos, ignoring the exactly-5 rule")
     parser.add_argument("--full-debug-video", action="store_true", help="Always render the full run video with HUD overlays for debugging")
     parser.add_argument("--max-movement", type=float, default=60.0, help="Maximum allowed skeleton movement per frame in scaled pixels")
     parser.add_argument("--max-throws", type=int, default=None, help="Maximum number of throws to detect per video (default: unlimited)")
@@ -79,7 +78,6 @@ def main():
             yolo_pose, 
             player_filter,
             enable_hud=args.enable_hud,
-            always_split=args.always_split,
             full_debug_video=args.full_debug_video,
             max_movement=args.max_movement,
             output_height=args.output_height,

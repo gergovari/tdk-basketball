@@ -8,9 +8,8 @@ from detectors import (
     ThrowCycleDetector,
 )
 from pipeline import (
-    extract_obj_frames,
+    extract_and_refine_obj_frames,
     only_keep_relevant_obj_frames,
-    refine_thrower_skeleton,
     render_throw_video,
 )
 
@@ -18,7 +17,7 @@ import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=1.5):
+def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=1.5):
     if not os.path.isfile(input_video_path):
         print(f"Error: Video file not found: {input_video_path}")
         return
@@ -35,7 +34,13 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
 
     print(f"Extracting object frames from {input_video_path}...")
     yolo_pose.reset()  # Reset tracker state for each new video
-    obj_frames = extract_obj_frames(video, yolo_pose, visualize=visualize)
+    obj_frames = extract_and_refine_obj_frames(video, yolo_pose, 
+        max_movement=max_movement, 
+        visualize=visualize, 
+        enable_invalidation=enable_invalidation, 
+        min_kp_conf=min_kp_conf, 
+        min_keypoints=min_keypoints, 
+        lowpass=lowpass)
     print(f"Extracted! ({len(obj_frames)})")
 
     print("Find thrower...")
@@ -104,10 +109,6 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
     obj_frames = only_keep_relevant_obj_frames(obj_frames, [], thrower_id)
     print("Filtered!")
 
-    print("Refine skeleton of thrower...")
-    obj_frames = refine_thrower_skeleton(video, obj_frames, thrower_id, yolo_pose, max_movement, visualize=visualize, enable_invalidation=enable_invalidation, min_kp_conf=min_kp_conf, min_keypoints=min_keypoints, lowpass=lowpass)
-    print("Tracked!")
-
     print("Detecting prepare-release cycles...")
     cycle_detector = ThrowCycleDetector(follow_through_seconds=follow_through)
     cycles, prepares_found, releases_found = cycle_detector.detect(
@@ -161,25 +162,7 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
         print(f"Finished {base_video_id}\n")
         return
         
-    if not always_split and len(cycles) != 5:
-        identifier = "MORE" if len(cycles) > 5 else "PARTIAL"
-        print(f"Detected {len(cycles)} throws. Rendering full video in one piece as {identifier}...")
-        out_path = os.path.join(output_dir, f"{base_video_id}-{identifier}.mp4")
-        
-        render_throw_video(
-            params["input_video_path"], 
-            out_path, 
-            obj_frames, 
-            first_thrower_frame, 
-            last_thrower_frame, 
-            -1, 
-            fps=video.fps,
-            enable_hud=enable_hud,
-            valid_frames=valid_frames_set,
-            output_height=output_height
-        )
-        print(f"Finished {base_video_id}\n")
-        return
+
 
     print("Rendering isolated throws...")
     for cycle_idx, (prep_frame, rel_frame) in enumerate(cycles):
@@ -213,9 +196,6 @@ def main():
     )
     parser.add_argument(
         "--enable-hud", action="store_true", help="Enable HUD overlays on the output video"
-    )
-    parser.add_argument(
-        "--always-split", action="store_true", help="Always output individual throw videos, ignoring the exactly-5 rule"
     )
     parser.add_argument(
         "--full-debug-video", action="store_true", help="Always render the full run video with HUD overlays for debugging"
@@ -258,7 +238,7 @@ def main():
     yolo_pose = YOLOPose(os.path.join(args.model_dir, args.pose_model))
     print(f"Model loaded! (device: {yolo_pose.device})\n")
 
-    process_video(args.video, args.output_path, yolo_pose, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws, min_kp_conf=args.min_kp_conf, min_keypoints=args.min_keypoints, lowpass=args.lowpass, follow_through=args.follow_through)
+    process_video(args.video, args.output_path, yolo_pose, player_filter, enable_hud=args.enable_hud, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws, min_kp_conf=args.min_kp_conf, min_keypoints=args.min_keypoints, lowpass=args.lowpass, follow_through=args.follow_through)
     print("All done!")
 
 

@@ -12,21 +12,31 @@ import math
 import time
 
 
-def extract_obj_frames(video: Video, yolo_pose: YOLOPose, visualize=False):
-    """Run YOLOPose on the video to detect people AND extract their skeletons in a single pass.
-
-    Returns obj_frames where each frame contains Object and Skeleton entries.
-    Each detected person contributes an Object (bounding box) and optionally
-    a Skeleton (keypoints) — both produced by the same model call.
+def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movement=60.0, visualize=False, enable_invalidation=False, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4):
+    """Run YOLOPose on the video, extract tracking data, and apply refinement filters in a single pass.
+    
+    This replaces separate extraction and refinement steps by processing the video
+    sequentially, removing the need for slow seek operations. All tracked skeletons
+    are refined on-the-fly.
     """
     total_frames = len(video)
     obj_frames = [[] for _ in range(total_frames)]
-    # Run YOLO-Pose at ~15 effective fps — plenty for tracking people standing in place
-    yolo_stride = max(1, round(video.fps / 15))
+    
     t_start = time.perf_counter()
-    last_detections = []
     window_created = False
     video.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    
+    last_valid_skeletons = {}
+    last_smoothed_skeletons = {}
+    last_known_rects = {}
+    
+    filter_desc = []
+    if min_kp_conf > 0: filter_desc.append(f"kp_conf>={min_kp_conf}")
+    if min_keypoints > 0: filter_desc.append(f"min_kp>={min_keypoints}")
+    if enable_invalidation: filter_desc.append(f"inval(max_move={max_movement})")
+    if lowpass > 0: filter_desc.append(f"lowpass(a={lowpass})")
+    print(f"  Filters: {', '.join(filter_desc) if filter_desc else 'none'}")
+    
     for i in range(total_frames):
         if i % 5 == 0 or i == total_frames - 1:
             elapsed = time.perf_counter() - t_start
@@ -37,45 +47,146 @@ def extract_obj_frames(video: Video, yolo_pose: YOLOPose, visualize=False):
                 eta_str = f" | ETA: {m}m {s:02d}s"
             else:
                 eta_str = ""
-            print(f"\rExtracting frame {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%) — {fps:.1f} fps (video: {video.fps} fps, stride: {yolo_stride}){eta_str}", end="", flush=True)
-        if i % yolo_stride == 0:
-            # Full decode + YOLO-Pose inference
-            ret, frame = video.cap.read()
-            if not ret:
-                break
-            detections = yolo_pose.track(video, frame)
-            # Flatten (Object, Skeleton) pairs into a single list
-            last_detections = []
-            for obj, skel in detections:
-                last_detections.append(obj)
-                if skel is not None:
-                    # Tag the skeleton with the same track ID so we can
-                    # associate it with its Object later
-                    skel._track_id = obj.id
-                    last_detections.append(skel)
-        else:
-            # Fast skip — advances decoder without producing a numpy array
-            video.cap.grab()
-        obj_frames[i].extend(last_detections)
-        if visualize and i % yolo_stride == 0:
+            print(f"\rExtracting & Refining {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%) — {fps:.1f} fps{eta_str}", end="", flush=True)
+            
+        ret, frame = video.cap.read()
+        if not ret: break
+        
+        detections = yolo_pose.track(video, frame)
+        active_tracks = set()
+        
+        # 1. First loop: handle detections found by standard tracking
+        for obj, skel in detections:
+            active_tracks.add(obj.id)
+            obj_frames[i].append(obj)
+            last_known_rects[obj.id] = obj.rect.with_padding(ScaledInt(60, (1280, 720), video.size).value)
+            if skel is not None:
+                skel._track_id = obj.id
+                
+        # 2. Handle missing tracks (dropout fallback)
+        for track_id, rect in list(last_known_rects.items()):
+            if track_id not in active_tracks:
+                fallback_skel = yolo_pose.detect_on_crop(frame, rect, video.scale)
+                if fallback_skel is not None:
+                    fallback_skel._track_id = track_id
+                    detections.append((None, fallback_skel))
+                    
+        # 3. Refine all skeletons for this frame
+        for _, skel in detections:
+            if skel is None:
+                continue
+                
+            track_id = skel._track_id
+            
+            if min_kp_conf > 0:
+                skel = _apply_confidence_filter(skel, min_kp_conf)
+                
+            if min_keypoints > 0 and len(skel.landmarks) < min_keypoints:
+                skel = None
+                
+            if skel is not None:
+                is_valid = True
+                invalidation_reason = ""
+                last_valid = last_valid_skeletons.get(track_id)
+                
+                if enable_invalidation and last_valid is not None:
+                    total_dist = 0
+                    count = 0
+                    for idx, lm in skel.landmarks.items():
+                        if idx in last_valid.landmarks:
+                            old_lm = last_valid.landmarks[idx]
+                            total_dist += math.hypot(lm.x - old_lm.x, lm.y - old_lm.y)
+                            count += 1
+                            
+                    if count > 0:
+                        avg_dist = total_dist / count
+                        curr_xs = [lm.x for lm in skel.landmarks.values()]
+                        curr_ys = [lm.y for lm in skel.landmarks.values()]
+                        old_xs = [lm.x for lm in last_valid.landmarks.values()]
+                        old_ys = [lm.y for lm in last_valid.landmarks.values()]
+                        
+                        if curr_xs and old_xs:
+                            curr_width = max(curr_xs) - min(curr_xs)
+                            curr_height = max(curr_ys) - min(curr_ys)
+                            old_width = max(old_xs) - min(old_xs)
+                            old_height = max(old_ys) - min(old_ys)
+                            
+                            if old_height > 0 and old_width > 0:
+                                curr_area = curr_width * curr_height
+                                old_area = old_width * old_height
+                                area_ratio = curr_area / old_area
+                                
+                                if area_ratio > 1.8 or area_ratio < 0.55:
+                                    is_valid = False
+                                    invalidation_reason = f"Area jump ({area_ratio:.2f}x)"
+                                    
+                                size_multiplier = old_height / 300.0
+                                dynamic_max_movement = max_movement * size_multiplier
+                                
+                                if is_valid and avg_dist > dynamic_max_movement:
+                                    is_valid = False
+                                    invalidation_reason = f"Moved {avg_dist:.1f}px (Limit: {dynamic_max_movement:.1f}px)"
+                            else:
+                                if avg_dist > max_movement * video.scale:
+                                    is_valid = False
+                                    invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
+                        else:
+                            if avg_dist > max_movement * video.scale:
+                                is_valid = False
+                                invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
+                                
+                if is_valid:
+                    last_valid_skeletons[track_id] = skel
+                    if lowpass > 0:
+                        last_smoothed = last_smoothed_skeletons.get(track_id)
+                        skel = _apply_lowpass(skel, last_smoothed, lowpass)
+                    last_smoothed_skeletons[track_id] = skel
+                    obj_frames[i].append(skel)
+                else:
+                    if visualize:
+                        print(f"\nSkeleton correction applied at frame {i} track {track_id} ({invalidation_reason})")
+                    if last_valid is not None:
+                        cached_skel = Skeleton(landmarks=last_valid.landmarks, detection_scale=last_valid.detection_scale, is_cached=True)
+                        cached_skel._track_id = track_id
+                        obj_frames[i].append(cached_skel)
+            else:
+                last_valid = last_valid_skeletons.get(track_id)
+                if last_valid is not None:
+                    cached_skel = Skeleton(landmarks=last_valid.landmarks, detection_scale=last_valid.detection_scale, is_cached=True)
+                    cached_skel._track_id = track_id
+                    obj_frames[i].append(cached_skel)
+                    
+        # Add cached skeleton for completely missing tracks
+        for track_id, last_valid in last_valid_skeletons.items():
+            found_skel = False
+            for _, skel in detections:
+                if skel is not None and skel._track_id == track_id:
+                    found_skel = True
+                    break
+            if not found_skel and last_valid is not None:
+                cached_skel = Skeleton(landmarks=last_valid.landmarks, detection_scale=last_valid.detection_scale, is_cached=True)
+                cached_skel._track_id = track_id
+                obj_frames[i].append(cached_skel)
+
+        if visualize and i % 3 == 0:
             vis = frame.copy()
             for obj in obj_frames[i]:
                 obj.draw(video, vis)
             if not window_created:
-                cv2.namedWindow("YOLO Detection", cv2.WINDOW_NORMAL)
-                cv2.resizeWindow("YOLO Detection", 1280, 720)
+                cv2.namedWindow("Extraction & Refining", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow("Extraction & Refining", 1280, 720)
                 window_created = True
-            cv2.imshow("YOLO Detection", vis)
+            cv2.imshow("Extraction & Refining", vis)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 visualize = False
-                cv2.destroyWindow("YOLO Detection")
+                cv2.destroyWindow("Extraction & Refining")
                 window_created = False
+
     print()
     if visualize and window_created:
-        cv2.destroyWindow("YOLO Detection")
+        cv2.destroyWindow("Extraction & Refining")
     return obj_frames
-
 def enrich_player_with_action(player_filter: List[str], obj_frames):
     for obj_frame in obj_frames:
         for obj in obj_frame:
@@ -126,238 +237,6 @@ def _apply_lowpass(skeleton, prev_skeleton, alpha):
     return Skeleton(landmarks=smoothed_landmarks, detection_scale=skeleton.detection_scale, is_cached=skeleton.is_cached)
 
 
-def refine_thrower_skeleton(video: Video, obj_frames, thrower_id, yolo_pose: YOLOPose,
-                            max_movement=60.0, visualize=False, enable_invalidation=False,
-                            min_kp_conf=0.3, min_keypoints=6, lowpass=0.4):
-    """Ensure every frame has a skeleton for the thrower.
-
-    The initial extract_obj_frames pass already produced skeletons alongside
-    bounding boxes. This function:
-    1. Keeps the skeleton that belongs to the thrower (matching by track ID).
-    2. For frames where the thrower's skeleton is missing (tracking dropout),
-       runs YOLOPose on a crop of the last known bounding box as fallback.
-    3. Applies configurable filters:
-       - Confidence filter: drops keypoints below min_kp_conf
-       - Minimum keypoints: rejects skeletons with fewer than min_keypoints valid landmarks
-       - Invalidation: rejects skeletons with implausible jumps (area/movement)
-       - Low-pass filter: first-order IIR (EMA) on keypoint positions to reduce jitter
-    4. Caches the last valid skeleton for complete dropouts.
-    """
-    last_valid_skeleton = None  # Last skeleton that passed all filters (pre-lowpass)
-    last_smoothed_skeleton = None  # Last skeleton after lowpass (used as lowpass state)
-    last_known_rect = None
-    total_frames = len(video)
-    fps = video.fps or 30
-    t_start = time.perf_counter()
-    window_created = False
-
-    filter_desc = []
-    if min_kp_conf > 0:
-        filter_desc.append(f"kp_conf≥{min_kp_conf}")
-    if min_keypoints > 0:
-        filter_desc.append(f"min_kp≥{min_keypoints}")
-    if enable_invalidation:
-        filter_desc.append(f"invalidation(max_move={max_movement})")
-    if lowpass > 0:
-        filter_desc.append(f"lowpass(α={lowpass})")
-    print(f"  Filters: {', '.join(filter_desc) if filter_desc else 'none'}")
-
-    # Calculate the "usual spot" by finding the median center of the thrower
-    thrower_centers = []
-    for frame_objs in obj_frames:
-        for obj in frame_objs:
-            if hasattr(obj, 'id') and obj.id == thrower_id:
-                cx = (obj.rect.x1 + obj.rect.x2) / 2
-                cy = (obj.rect.y1 + obj.rect.y2) / 2
-                thrower_centers.append((cx, cy))
-
-    usual_spot = None
-    if thrower_centers:
-        thrower_centers.sort(key=lambda p: p[0])
-        median_x = thrower_centers[len(thrower_centers)//2][0]
-        thrower_centers.sort(key=lambda p: p[1])
-        median_y = thrower_centers[len(thrower_centers)//2][1]
-        usual_spot = (median_x, median_y)
-
-    # Determine upfront which frames need crop fallback (no thrower skeleton from extraction)
-    # so we know which frames require actual pixel decoding.
-    needs_fallback = set()
-    for i in range(total_frames):
-        has_thrower_skel = any(
-            isinstance(obj, Skeleton) and getattr(obj, '_track_id', -1) == thrower_id
-            for obj in obj_frames[i]
-        )
-        if not has_thrower_skel:
-            needs_fallback.add(i)
-
-    video.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-    for i in range(total_frames):
-        if i % 5 == 0 or i == total_frames - 1:
-            elapsed = time.perf_counter() - t_start
-            fps_proc = (i + 1) / elapsed if elapsed > 0 else 0
-            if fps_proc > 0:
-                eta_s = (total_frames - (i + 1)) / fps_proc
-                m, s = divmod(int(eta_s), 60)
-                eta_str = f" | ETA: {m}m {s:02d}s"
-            else:
-                eta_str = ""
-            print(f"\rRefining skeleton {i+1}/{total_frames} ({(i+1)/total_frames*100:.1f}%){eta_str}", end="", flush=True)
-        show_this_frame = visualize
-
-        # Only decode a frame if we need pixels (fallback inference or visualization)
-        need_pixels = (i in needs_fallback) or show_this_frame
-        frame = None
-        if need_pixels:
-            video.cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-            ret, frame = video.cap.read()
-            if not ret:
-                frame = None
-
-        current_thrower = next(
-            (obj for obj in obj_frames[i] if hasattr(obj, 'id') and not isinstance(obj, Skeleton) and obj.id == thrower_id), None
-        )
-
-        # Stop tracking if they move too far from the usual spot
-        if current_thrower is not None and usual_spot is not None:
-            cx = (current_thrower.rect.x1 + current_thrower.rect.x2) / 2
-            cy = (current_thrower.rect.y1 + current_thrower.rect.y2) / 2
-            dist_from_usual = math.hypot(cx - usual_spot[0], cy - usual_spot[1])
-            if dist_from_usual > video.size[0] * 0.15:
-                current_thrower = None
-                last_valid_skeleton = None
-                last_smoothed_skeleton = None
-
-        # Check if we already have a skeleton for the thrower from the extraction pass
-        existing_skel = next(
-            (obj for obj in obj_frames[i] if isinstance(obj, Skeleton) and getattr(obj, '_track_id', -1) == thrower_id),
-            None
-        )
-
-        # Remove ALL skeletons from this frame — we'll add back only the thrower's
-        obj_frames[i] = [obj for obj in obj_frames[i] if not isinstance(obj, Skeleton)]
-
-        thrower_skeleton = existing_skel
-
-        # If no skeleton from extraction, try crop-based fallback (requires pixels)
-        if thrower_skeleton is None and frame is not None:
-            if current_thrower is not None:
-                rect = current_thrower.rect.with_padding(
-                    ScaledInt(60, (1280, 720), video.size).value
-                )
-                last_known_rect = rect
-            elif last_known_rect is not None:
-                rect = last_known_rect
-            else:
-                rect = None
-
-            if rect is not None:
-                thrower_skeleton = yolo_pose.detect_on_crop(frame, rect, video.scale)
-        elif thrower_skeleton is not None:
-            # Update last_known_rect from the thrower's bounding box
-            if current_thrower is not None:
-                last_known_rect = current_thrower.rect.with_padding(
-                    ScaledInt(60, (1280, 720), video.size).value
-                )
-
-        if thrower_skeleton is not None:
-            # --- Filter 1: Confidence threshold ---
-            if min_kp_conf > 0:
-                thrower_skeleton = _apply_confidence_filter(thrower_skeleton, min_kp_conf)
-
-            # --- Filter 2: Minimum keypoints ---
-            if min_keypoints > 0 and len(thrower_skeleton.landmarks) < min_keypoints:
-                thrower_skeleton = None  # Reject — will fall through to cache
-
-        if thrower_skeleton is not None:
-            # --- Filter 3: Invalidation (area/movement jumps) ---
-            is_valid = True
-            invalidation_reason = ""
-            if enable_invalidation and last_valid_skeleton is not None:
-                total_dist = 0
-                count = 0
-                for idx, lm in thrower_skeleton.landmarks.items():
-                    if idx in last_valid_skeleton.landmarks:
-                        old_lm = last_valid_skeleton.landmarks[idx]
-                        total_dist += math.hypot(lm.x - old_lm.x, lm.y - old_lm.y)
-                        count += 1
-
-                if count > 0:
-                    avg_dist = total_dist / count
-
-                    curr_xs = [lm.x for lm in thrower_skeleton.landmarks.values()]
-                    curr_ys = [lm.y for lm in thrower_skeleton.landmarks.values()]
-                    old_xs = [lm.x for lm in last_valid_skeleton.landmarks.values()]
-                    old_ys = [lm.y for lm in last_valid_skeleton.landmarks.values()]
-
-                    if curr_xs and old_xs:
-                        curr_width = max(curr_xs) - min(curr_xs)
-                        curr_height = max(curr_ys) - min(curr_ys)
-                        old_width = max(old_xs) - min(old_xs)
-                        old_height = max(old_ys) - min(old_ys)
-
-                        if old_height > 0 and old_width > 0:
-                            curr_area = curr_width * curr_height
-                            old_area = old_width * old_height
-                            area_ratio = curr_area / old_area
-
-                            # Scale-invariant Area Check (Resolution independent)
-                            if area_ratio > 1.8 or area_ratio < 0.55:
-                                is_valid = False
-                                invalidation_reason = f"Area jump ({area_ratio:.2f}x)"
-
-                            # Dynamic Movement Threshold (scaled to the thrower's true pixel height)
-                            size_multiplier = old_height / 300.0
-                            dynamic_max_movement = max_movement * size_multiplier
-
-                            if is_valid and avg_dist > dynamic_max_movement:
-                                is_valid = False
-                                invalidation_reason = f"Moved {avg_dist:.1f}px (Limit: {dynamic_max_movement:.1f}px)"
-                        else:
-                            if avg_dist > max_movement * video.scale:
-                                is_valid = False
-                                invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
-                    else:
-                        if avg_dist > max_movement * video.scale:
-                            is_valid = False
-                            invalidation_reason = f"Moved {avg_dist:.1f}px (Fallback limit)"
-
-            if is_valid:
-                last_valid_skeleton = thrower_skeleton
-
-                # --- Filter 4: Low-pass filter ---
-                if lowpass > 0:
-                    thrower_skeleton = _apply_lowpass(thrower_skeleton, last_smoothed_skeleton, lowpass)
-
-                last_smoothed_skeleton = thrower_skeleton
-                obj_frames[i].append(thrower_skeleton)
-            else:
-                print(f"\nSkeleton correction applied at frame {i} ({invalidation_reason})")
-                cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
-                obj_frames[i].append(cached_skel)
-        elif last_valid_skeleton is not None:
-            cached_skel = Skeleton(landmarks=last_valid_skeleton.landmarks, detection_scale=last_valid_skeleton.detection_scale, is_cached=True)
-            obj_frames[i].append(cached_skel)
-
-        if show_this_frame and frame is not None and i % 3 == 0:
-            vis = frame.copy()
-            for obj in obj_frames[i]:
-                obj.draw(video, vis)
-            if not window_created:
-                cv2.namedWindow("Skeleton Tracking", cv2.WINDOW_NORMAL)
-                cv2.resizeWindow("Skeleton Tracking", 1280, 720)
-                window_created = True
-            cv2.imshow("Skeleton Tracking", vis)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                visualize = False
-                cv2.destroyWindow("Skeleton Tracking")
-                window_created = False
-
-    print()  # Newline after progress finishes
-    if visualize and window_created:
-        cv2.destroyWindow("Skeleton Tracking")
-    return obj_frames
 
 def render_video(video: Video, obj_frames, release_frame=-1, release_detector_name="", output_height=720.0):
     orig_height = video.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)

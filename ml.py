@@ -63,15 +63,23 @@ class YOLOPose:
         )
 
         detections = []
-        frame_h, frame_w = frame.shape[:2]
+        
+        # Batch copy all tensors to CPU/NumPy to prevent hundreds of tiny PCIe syncs per frame
+        boxes_xyxy = result.boxes.xyxy.cpu().numpy()
+        boxes_conf = result.boxes.conf.cpu().numpy()
+        boxes_id = result.boxes.id.cpu().numpy() if result.boxes.id is not None else None
+        
+        if has_keypoints:
+            kps_xy = result.keypoints.xy.cpu().numpy()
+            kps_conf = result.keypoints.conf.cpu().numpy()
 
-        for det_idx in range(len(result.boxes)):
-            box = result.boxes[det_idx]
-            rect = Rectangle(*map(int, box.xyxy[0]), detection_scale=video.scale)
-            conf = float(box.conf[0])
+        for det_idx in range(len(boxes_xyxy)):
+            xyxy = boxes_xyxy[det_idx]
+            rect = Rectangle(*map(int, xyxy), detection_scale=video.scale)
+            conf = float(boxes_conf[det_idx])
 
-            if box.id is not None:
-                track_id = int(box.id[0])
+            if boxes_id is not None:
+                track_id = int(boxes_id[det_idx])
             else:
                 track_id = -1
 
@@ -85,16 +93,16 @@ class YOLOPose:
 
             skeleton = None
             if has_keypoints:
-                xy = result.keypoints.xy[det_idx]    # [17, 2] pixel coords
-                kp_conf = result.keypoints.conf[det_idx]  # [17]
+                xy = kps_xy[det_idx]    # [17, 2] pixel coords
+                kp_conf = kps_conf[det_idx]  # [17]
 
                 extracted_landmarks = {}
                 for coco_i, pipe_i in _COCO_TO_PIPELINE.items():
                     v = float(kp_conf[coco_i])
                     if v > 0:
                         extracted_landmarks[pipe_i] = Landmark(
-                            x=int(float(xy[coco_i][0])),
-                            y=int(float(xy[coco_i][1])),
+                            x=int(xy[coco_i][0]),
+                            y=int(xy[coco_i][1]),
                             visibility=v,
                         )
 

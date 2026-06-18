@@ -36,6 +36,7 @@ def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movemen
     last_valid_skeletons = {}
     last_smoothed_skeletons = {}
     last_known_rects = {}
+    missing_tracks = {}
     
     filter_desc = []
     if min_kp_conf > 0: filter_desc.append(f"kp_conf>={min_kp_conf}")
@@ -83,10 +84,20 @@ def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movemen
         # 2. Handle missing tracks (dropout fallback)
         for track_id, rect in list(last_known_rects.items()):
             if track_id not in active_tracks:
+                missing_tracks[track_id] = missing_tracks.get(track_id, 0) + 1
+                if missing_tracks[track_id] > 30:
+                    del last_known_rects[track_id]
+                    last_valid_skeletons.pop(track_id, None)
+                    last_smoothed_skeletons.pop(track_id, None)
+                    del missing_tracks[track_id]
+                    continue
+                    
                 fallback_skel = yolo_pose.detect_on_crop(frame, rect, video.scale)
                 if fallback_skel is not None:
                     fallback_skel._track_id = track_id
                     detections.append((None, fallback_skel))
+            else:
+                missing_tracks[track_id] = 0
                     
         # 3. Refine all skeletons for this frame
         for _, skel in detections:

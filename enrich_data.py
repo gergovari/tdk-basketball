@@ -72,6 +72,13 @@ def main():
         print(f"Processing video: {video_path}")
         print(f"Output directory: {output_dir}")
         
+        existing_mp4s = list(output_dir.glob(f"{video_path.stem}-*.mp4"))
+        existing_csvs = list(output_dir.glob(f"{video_path.stem}-*.csv"))
+        
+        if existing_mp4s and existing_csvs:
+            print(f"Skipping {video_path.name}: Found {len(existing_mp4s)} video(s) and {len(existing_csvs)} CSV(s) already in output directory.")
+            continue
+        
         process_video(
             str(video_path), 
             str(output_dir), 

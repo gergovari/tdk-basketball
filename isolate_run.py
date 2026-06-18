@@ -18,7 +18,7 @@ import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=0.0):
+def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=0.0, enable_fallback=False):
     if not os.path.isfile(input_video_path):
         print(f"Error: Video file not found: {input_video_path}")
         return
@@ -41,7 +41,8 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
         enable_invalidation=enable_invalidation, 
         min_kp_conf=min_kp_conf, 
         min_keypoints=min_keypoints, 
-        lowpass=lowpass)
+        lowpass=lowpass,
+        enable_fallback=enable_fallback)
     print(f"Extracted! ({len(obj_frames)})")
 
     print("Find thrower...")
@@ -258,6 +259,9 @@ def main():
     parser.add_argument(
         '--follow-through', type=float, default=0.0, help="Seconds to record after the release (default: 0.0)"
     )
+    parser.add_argument(
+        '--enable-fallback', action="store_true", help="Enable crop-based fallback tracking for dropped skeletons (slows down processing)"
+    )
     args = parser.parse_args()
 
     player_filter = ["player", "person", "human"]
@@ -266,7 +270,7 @@ def main():
     yolo_pose = YOLOPose(os.path.join(args.model_dir, args.pose_model))
     print(f"Model loaded! (device: {yolo_pose.device})\n")
 
-    process_video(args.video, args.output_path, yolo_pose, player_filter, enable_hud=args.enable_hud, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws, min_kp_conf=args.min_kp_conf, min_keypoints=args.min_keypoints, lowpass=args.lowpass, follow_through=args.follow_through)
+    process_video(args.video, args.output_path, yolo_pose, player_filter, enable_hud=args.enable_hud, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws, min_kp_conf=args.min_kp_conf, min_keypoints=args.min_keypoints, lowpass=args.lowpass, follow_through=args.follow_through, enable_fallback=args.enable_fallback)
     print("All done!")
 
 

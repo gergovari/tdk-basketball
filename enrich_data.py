@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--min-keypoints', type=int, default=6, help="Minimum number of valid landmarks to accept a skeleton (0=off, default: 6)")
     parser.add_argument('--lowpass', type=float, default=0.4, help="Low-pass filter strength on keypoint positions (0=off, 0.8=heavy, default: 0.4)")
     parser.add_argument('--follow-through', type=float, default=0.0, help="Seconds to record after the release (default: 0.0)")
+    parser.add_argument('--enable-fallback', action="store_true", help="Enable crop-based fallback tracking for dropped skeletons (slows down processing)")
     args = parser.parse_args()
 
     data_dir = Path(args.data_folder)
@@ -32,9 +33,7 @@ def main():
 
     player_filter = ["player", "person", "human"]
 
-    print("Loading model once for all videos...")
-    yolo_pose = YOLOPose(os.path.join(args.model_dir, args.pose_model))
-    print(f"Model loaded! (device: {yolo_pose.device})\n")
+    print("Preparing to process videos (model will be loaded per-video to prevent memory leaks)...\n")
 
     # Collect all video files
     video_files = []
@@ -72,6 +71,8 @@ def main():
         print(f"Processing video: {video_path}")
         print(f"Output directory: {output_dir}")
         
+        yolo_pose = YOLOPose(os.path.join(args.model_dir, args.pose_model))
+        
         existing_mp4s = list(output_dir.glob(f"{video_path.stem}-*.mp4"))
         existing_csvs = list(output_dir.glob(f"{video_path.stem}-*.csv"))
         
@@ -94,8 +95,17 @@ def main():
             min_kp_conf=args.min_kp_conf,
             min_keypoints=args.min_keypoints,
             lowpass=args.lowpass,
-            follow_through=args.follow_through
+            follow_through=args.follow_through,
+            enable_fallback=args.enable_fallback
         )
+        
+        # Aggressive memory cleanup to prevent FPS drop across videos
+        del yolo_pose
+        import gc
+        gc.collect()
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     print("==================================================")
     print("Enrichment complete!")

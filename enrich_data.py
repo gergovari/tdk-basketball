@@ -2,9 +2,7 @@ import argparse
 import os
 from pathlib import Path
 
-from ultralytics import YOLO
-from config import YOLOParams, MediaPipeParams
-from ml import YOLOFiltered, MediaPipe, YOLOPose
+from ml import YOLOPose
 
 # Import the extracted function from isolate_run
 from isolate_run import process_video
@@ -18,10 +16,13 @@ def main():
     parser.add_argument("--full-debug-video", action="store_true", help="Always render the full run video with HUD overlays for debugging")
     parser.add_argument("--max-movement", type=float, default=60.0, help="Maximum allowed skeleton movement per frame in scaled pixels")
     parser.add_argument("--max-throws", type=int, default=None, help="Maximum number of throws to detect per video (default: unlimited)")
-    parser.add_argument("--pose-backend", choices=["mediapipe", "yolo"], default="yolo", help="Pose estimation backend: 'mediapipe' (CPU) or 'yolo' (GPU, faster)")
+    parser.add_argument("--pose-model", default="yolo11n-pose.pt", help="YOLO-Pose model filename (in model_dir)")
     parser.add_argument("--enable-invalidation", action="store_true", help="Enable skeleton invalidation logic (defaults to False)")
     parser.add_argument("--output-height", type=float, default=720.0, help="Target height for the output videos")
     parser.add_argument("--visualize", action="store_true", help="Show live OpenCV windows for each processing step (press 'q' to dismiss)")
+    parser.add_argument('--min-kp-conf', type=float, default=0.3, help="Minimum keypoint confidence to keep a landmark (0=off, default: 0.3)")
+    parser.add_argument('--min-keypoints', type=int, default=6, help="Minimum number of valid landmarks to accept a skeleton (0=off, default: 6)")
+    parser.add_argument('--lowpass', type=float, default=0.4, help="Low-pass filter strength on keypoint positions (0=off, 0.8=heavy, default: 0.4)")
     args = parser.parse_args()
 
     data_dir = Path(args.data_folder)
@@ -30,27 +31,10 @@ def main():
         return
 
     player_filter = ["player", "person", "human"]
-    yolo_filter = player_filter
-    yolo_params = YOLOParams(
-        model_path=os.path.join(args.model_dir, "yolo26n.pt"),
-        name_filter=yolo_filter,
-    )
 
-    print("Loading models once for all videos...")
-    model = YOLO(yolo_params.model_path)
-    yolo_filtered = YOLOFiltered(model, yolo_params.name_filter)
-    if args.pose_backend == "yolo":
-        pose_model = YOLOPose(os.path.join(args.model_dir, "yolo11n-pose.pt"))
-        print(f"Pose backend: YOLO-Pose (GPU)")
-    else:
-        mp_params = MediaPipeParams(
-            model_path=os.path.join(args.model_dir, "pose_landmarker.task"),
-            min_pose_conf=0,
-            min_track_conf=0,
-        )
-        pose_model = MediaPipe(mp_params)
-        print(f"Pose backend: MediaPipe (CPU)")
-    print("Models loaded!\n")
+    print("Loading model once for all videos...")
+    yolo_pose = YOLOPose(os.path.join(args.model_dir, args.pose_model))
+    print(f"Model loaded! (device: {yolo_pose.device})\n")
 
     # Collect all video files
     video_files = []
@@ -91,8 +75,7 @@ def main():
         process_video(
             str(video_path), 
             str(output_dir), 
-            yolo_filtered, 
-            pose_model, 
+            yolo_pose, 
             player_filter,
             enable_hud=args.enable_hud,
             always_split=args.always_split,
@@ -101,7 +84,10 @@ def main():
             output_height=args.output_height,
             enable_invalidation=args.enable_invalidation,
             visualize=args.visualize,
-            max_throws=args.max_throws
+            max_throws=args.max_throws,
+            min_kp_conf=args.min_kp_conf,
+            min_keypoints=args.min_keypoints,
+            lowpass=args.lowpass
         )
 
     print("==================================================")

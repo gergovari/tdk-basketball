@@ -127,42 +127,28 @@ class Landmark:
     y: int
     visibility: float
 
+# Connections between COCO-mapped keypoint indices (via _COCO_TO_PIPELINE mapping):
+# 0=nose, 2=left_eye, 5=right_eye, 7=left_ear, 8=right_ear,
+# 11=left_shoulder, 12=right_shoulder, 13=left_elbow, 14=right_elbow,
+# 15=left_wrist, 16=right_wrist, 23=left_hip, 24=right_hip,
+# 25=left_knee, 26=right_knee, 27=left_ankle, 28=right_ankle
 POSE_CONNECTIONS = [
-    (0, 1),
-    (1, 2),
-    (2, 3),
-    (3, 7),
-    (0, 4),
-    (4, 5),
-    (5, 6),
-    (6, 8),
-    (9, 10),
-    (11, 12),
-    (11, 13),
-    (13, 15),
-    (15, 17),
-    (15, 19),
-    (15, 21),
-    (17, 19),
-    (12, 14),
-    (14, 16),
-    (16, 18),
-    (16, 20),
-    (16, 22),
-    (18, 20),
-    (11, 23),
-    (12, 24),
-    (23, 24),
-    (23, 25),
-    (24, 26),
-    (25, 27),
-    (26, 28),
-    (27, 29),
-    (28, 30),
-    (29, 31),
-    (30, 32),
-    (27, 31),
-    (28, 32),
+    (0, 2),      # nose → left eye
+    (0, 5),      # nose → right eye
+    (2, 7),      # left eye → left ear
+    (5, 8),      # right eye → right ear
+    (11, 12),    # shoulder bridge
+    (11, 13),    # left shoulder → left elbow
+    (13, 15),    # left elbow → left wrist
+    (12, 14),    # right shoulder → right elbow
+    (14, 16),    # right elbow → right wrist
+    (11, 23),    # left shoulder → left hip
+    (12, 24),    # right shoulder → right hip
+    (23, 24),    # hip bridge
+    (23, 25),    # left hip → left knee
+    (24, 26),    # right hip → right knee
+    (25, 27),    # left knee → left ankle
+    (26, 28),    # right knee → right ankle
 ]
 
 @dataclass

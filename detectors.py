@@ -30,7 +30,7 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
             max_dist = 200 # Maximum allowed pixel distance between frames to match tracks
         
         for i, obj_frame in enumerate(obj_frames):
-            persons = [obj for obj in obj_frame if any(word in obj.name for word in self.person_filter)]
+            persons = [obj for obj in obj_frame if hasattr(obj, 'name') and any(word in obj.name for word in self.person_filter)]
             
             available_tracks = [t for t in tracks if i not in t['frames']]
             pairs = []

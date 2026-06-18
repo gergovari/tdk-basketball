@@ -1,8 +1,8 @@
 from ultralytics import YOLO
 
-from config import InputParams, YOLOParams, MediaPipeParams
+from config import InputParams, YOLOParams
 from video import Video
-from ml import YOLOFiltered, MediaPipe, YOLOPose
+from ml import YOLOPose
 from detectors import (
     BiggestPersonThrowerDetector,
     SkeletonReleaseDetector,
@@ -11,16 +11,19 @@ from detectors import (
 from pipeline import (
     extract_obj_frames,
     only_keep_relevant_obj_frames,
-    append_thrower_skeleton,
+    refine_thrower_skeleton,
     render_throw_video,
-    # export_skeleton_data,
 )
 
 import argparse
 import os
 
 
-def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None):
+def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, always_split=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4):
+    if not os.path.isfile(input_video_path):
+        print(f"Error: Video file not found: {input_video_path}")
+        return
+
     base_video_id = os.path.splitext(os.path.basename(input_video_path))[0]
 
     print(f"--- Processing Video: {base_video_id} ---")
@@ -32,7 +35,8 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
     video = Video(params["input_video_path"], params["output_video_path"])
 
     print(f"Extracting object frames from {input_video_path}...")
-    obj_frames = extract_obj_frames(video, yolo_filtered, visualize=visualize)
+    yolo_pose.reset()  # Reset tracker state for each new video
+    obj_frames = extract_obj_frames(video, yolo_pose, visualize=visualize)
     print(f"Extracted! ({len(obj_frames)})")
 
     print("Find thrower...")
@@ -101,8 +105,8 @@ def process_video(input_video_path, output_dir, yolo_filtered, mediapipe, player
     obj_frames = only_keep_relevant_obj_frames(obj_frames, [], thrower_id)
     print("Filtered!")
 
-    print("Append skeleton of thrower...")
-    obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe, max_movement, visualize=visualize, enable_invalidation=enable_invalidation)
+    print("Refine skeleton of thrower...")
+    obj_frames = refine_thrower_skeleton(video, obj_frames, thrower_id, yolo_pose, max_movement, visualize=visualize, enable_invalidation=enable_invalidation, min_kp_conf=min_kp_conf, min_keypoints=min_keypoints, lowpass=lowpass)
     print("Tracked!")
 
     print("Detecting prepare-release cycles...")
@@ -276,37 +280,29 @@ def main():
         '--max-throws', type=int, default=None, help="Maximum number of throws to detect per video (default: unlimited)"
     )
     parser.add_argument(
-        '--pose-backend', choices=["mediapipe", "yolo"], default="yolo", help="Pose estimation backend: 'mediapipe' (CPU) or 'yolo' (GPU, faster)"
+        '--pose-model', default="yolo11n-pose.pt", help="YOLO-Pose model filename (in model_dir)"
     )
     parser.add_argument(
         "--output-height", type=float, default=720.0, help="Target height for the output videos"
     )
+    parser.add_argument(
+        '--min-kp-conf', type=float, default=0.3, help="Minimum keypoint confidence to keep a landmark (0=off, default: 0.3)"
+    )
+    parser.add_argument(
+        '--min-keypoints', type=int, default=6, help="Minimum number of valid landmarks to accept a skeleton (0=off, default: 6)"
+    )
+    parser.add_argument(
+        '--lowpass', type=float, default=0.4, help="Low-pass filter strength on keypoint positions (0=off, 0.8=heavy, default: 0.4)"
+    )
     args = parser.parse_args()
 
     player_filter = ["player", "person", "human"]
-    yolo_filter = player_filter
-    yolo_params = YOLOParams(
-        model_path=os.path.join(args.model_dir, "yolo26n.pt"),
-        name_filter=yolo_filter,
-    )
 
-    print("Loading models...")
-    model = YOLO(yolo_params.model_path)
-    yolo_filtered = YOLOFiltered(model, yolo_params.name_filter)
-    if args.pose_backend == "yolo":
-        pose_model = YOLOPose(os.path.join(args.model_dir, "yolo11n-pose.pt"))
-        print(f"Pose backend: YOLO-Pose (GPU)")
-    else:
-        mp_params = MediaPipeParams(
-            model_path=os.path.join(args.model_dir, "pose_landmarker.task"),
-            min_pose_conf=0,
-            min_track_conf=0,
-        )
-        pose_model = MediaPipe(mp_params)
-        print(f"Pose backend: MediaPipe (CPU)")
-    print("Models loaded!\n")
+    print("Loading model...")
+    yolo_pose = YOLOPose(os.path.join(args.model_dir, args.pose_model))
+    print(f"Model loaded! (device: {yolo_pose.device})\n")
 
-    process_video(args.video, args.output_path, yolo_filtered, pose_model, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws)
+    process_video(args.video, args.output_path, yolo_pose, player_filter, enable_hud=args.enable_hud, always_split=args.always_split, full_debug_video=args.full_debug_video, max_movement=args.max_movement, output_height=args.output_height, visualize=args.visualize, enable_invalidation=args.enable_invalidation, max_throws=args.max_throws, min_kp_conf=args.min_kp_conf, min_keypoints=args.min_keypoints, lowpass=args.lowpass)
     print("All done!")
 
 

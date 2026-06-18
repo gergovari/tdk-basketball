@@ -24,10 +24,3 @@ class InputParams:
 class YOLOParams:
     model_path: str
     name_filter: List[str]
-
-
-@dataclass
-class MediaPipeParams:
-    model_path: str
-    min_pose_conf: float
-    min_track_conf: float

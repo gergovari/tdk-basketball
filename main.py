@@ -1,21 +1,19 @@
-from ultralytics import YOLO
-
-from config import InputParams, YOLOParams, MediaPipeParams
+from config import InputParams
 from video import Video
-from ml import YOLOFiltered, MediaPipe
+from ml import YOLOPose
 from detectors import (
     BiggestPersonThrowerDetector,
-    HighestHandReleaseDetector,
 )
 from pipeline import (
     extract_obj_frames,
     enrich_player_with_action,
     only_keep_relevant_obj_frames,
-    append_thrower_skeleton,
+    refine_thrower_skeleton,
     cut_after_release,
     render_video,
     export_skeleton_data,
 )
+from detectors import SkeletonReleaseDetector
 
 import argparse
 import os
@@ -25,26 +23,15 @@ def main():
     parser.add_argument("--videos", nargs="+", required=True, help="List of video files or names to process")
     parser.add_argument("--data_path", default="data/", help="Base path for input/output data")
     parser.add_argument("--model_dir", default="models/", help="Directory containing the model files")
+    parser.add_argument("--pose-model", default="yolo11n-pose.pt", help="YOLO-Pose model filename (in model_dir)")
     args = parser.parse_args()
 
     player_filter = ["player", "person", "human"]
     ball_filter = ["ball"]
-    yolo_filter = player_filter + ball_filter
-    yolo_params = YOLOParams(
-        model_path=os.path.join(args.model_dir, "basketball-3-m.pt"), 
-        name_filter=yolo_filter
-    )
-    mp_params = MediaPipeParams(
-        model_path=os.path.join(args.model_dir, "pose_landmarker.task"), 
-        min_pose_conf=0, 
-        min_track_conf=0
-    )
 
-    print("Loading models...")
-    model = YOLO(yolo_params.model_path)
-    yolo_filtered = YOLOFiltered(model, yolo_params.name_filter)
-    mediapipe = MediaPipe(mp_params)
-    print("Models loaded!\n")
+    print("Loading model...")
+    yolo_pose = YOLOPose(os.path.join(args.model_dir, args.pose_model))
+    print(f"Model loaded! (device: {yolo_pose.device})\n")
 
     for video_file in args.videos:
         base_video_id = os.path.splitext(os.path.basename(video_file))[0]
@@ -55,7 +42,8 @@ def main():
         video = Video(params.input_video_path, params.output_video_path)
 
         print(f"Extracting object frames from {params.input_video_path}...")
-        obj_frames = extract_obj_frames(video, yolo_filtered)
+        yolo_pose.reset()
+        obj_frames = extract_obj_frames(video, yolo_pose)
         print("Extracted!")
 
         print("Enrich player data with action...")
@@ -83,12 +71,12 @@ def main():
         obj_frames = only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id)
         print("Filtered!")
 
-        print("Append skeleton of thrower...")
-        obj_frames = append_thrower_skeleton(video, obj_frames, thrower_id, mediapipe)
+        print("Refine skeleton of thrower...")
+        obj_frames = refine_thrower_skeleton(video, obj_frames, thrower_id, yolo_pose)
         print("Tracked!")
 
         print("Cut object frames after release...")
-        release_detectors = [HighestHandReleaseDetector()]
+        release_detectors = [SkeletonReleaseDetector()]
         obj_frames, release_frame, release_detector_name = cut_after_release(
             obj_frames, release_detectors, video.fps
         )

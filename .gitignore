@@ -5,3 +5,5 @@ __pycache__/*
 *.mp4
 cleaneddata*/
 out/*
+models/*.pt
+*.pt

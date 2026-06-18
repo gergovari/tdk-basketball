@@ -7,3 +7,7 @@ cleaneddata*/
 out/*
 models/*.pt
 *.pt
+models/*.engine
+*.onnx
+models/*.onnx
+*.engine

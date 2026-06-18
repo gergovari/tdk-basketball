@@ -83,28 +83,28 @@ def extract_and_refine_obj_frames(video: Video, yolo_pose: YOLOPose, max_movemen
             if skel is not None:
                 skel._track_id = obj.id
                 
-        # 2. Handle missing tracks (dropout fallback)
-        if enable_fallback:
-            for track_id, rect in list(last_known_rects.items()):
-                if track_id not in active_tracks:
-                    missing_tracks[track_id] = missing_tracks.get(track_id, 0) + 1
+        # 2. Handle missing tracks (dropout fallback and cache cleanup)
+        for track_id, rect in list(last_known_rects.items()):
+            if track_id not in active_tracks:
+                missing_tracks[track_id] = missing_tracks.get(track_id, 0) + 1
+                
+                # Drop small tracking boxes (bystanders in the background) immediately
+                is_large_enough = (rect.y2 - rect.y1) >= 120
+                
+                if missing_tracks[track_id] > 10 or not is_large_enough:
+                    del last_known_rects[track_id]
+                    last_valid_skeletons.pop(track_id, None)
+                    last_smoothed_skeletons.pop(track_id, None)
+                    del missing_tracks[track_id]
+                    continue
                     
-                    # Drop small tracking boxes (bystanders in the background) immediately
-                    is_large_enough = rect.height >= 120
-                    
-                    if missing_tracks[track_id] > 10 or not is_large_enough:
-                        del last_known_rects[track_id]
-                        last_valid_skeletons.pop(track_id, None)
-                        last_smoothed_skeletons.pop(track_id, None)
-                        del missing_tracks[track_id]
-                        continue
-                        
+                if enable_fallback:
                     fallback_skel = yolo_pose.detect_on_crop(frame, rect, video.scale)
                     if fallback_skel is not None:
                         fallback_skel._track_id = track_id
                         detections.append((None, fallback_skel))
-                else:
-                    missing_tracks[track_id] = 0
+            else:
+                missing_tracks[track_id] = 0
                     
         # 3. Refine all skeletons for this frame
         for _, skel in detections:
@@ -251,7 +251,9 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
     filtered_obj_frames = []
     for obj_frame in obj_frames:
         filtered_frame = filter_obj_frame(
-            lambda x: any(word in x.name for word in ball_filter) or getattr(x, 'id', -1) == thrower_id or isinstance(x, Skeleton),
+            lambda x: (hasattr(x, 'name') and any(word in x.name for word in ball_filter)) or 
+                      (getattr(x, 'id', -1) == thrower_id) or 
+                      (isinstance(x, Skeleton) and getattr(x, '_track_id', -1) == thrower_id),
             obj_frame,
         )
         filtered_obj_frames.append(filtered_frame)
@@ -261,7 +263,10 @@ def only_keep_relevant_obj_frames(obj_frames, ball_filter, thrower_id):
 def _apply_confidence_filter(skeleton, min_conf):
     """Remove landmarks below the confidence threshold."""
     filtered = {idx: lm for idx, lm in skeleton.landmarks.items() if lm.visibility >= min_conf}
-    return Skeleton(landmarks=filtered, detection_scale=skeleton.detection_scale, is_cached=skeleton.is_cached)
+    skel = Skeleton(landmarks=filtered, detection_scale=skeleton.detection_scale, is_cached=skeleton.is_cached)
+    if hasattr(skeleton, '_track_id'):
+        skel._track_id = skeleton._track_id
+    return skel
 
 
 def _apply_lowpass(skeleton, prev_skeleton, alpha):
@@ -286,7 +291,10 @@ def _apply_lowpass(skeleton, prev_skeleton, alpha):
         else:
             smoothed_landmarks[idx] = lm
 
-    return Skeleton(landmarks=smoothed_landmarks, detection_scale=skeleton.detection_scale, is_cached=skeleton.is_cached)
+    skel = Skeleton(landmarks=smoothed_landmarks, detection_scale=skeleton.detection_scale, is_cached=skeleton.is_cached)
+    if hasattr(skeleton, '_track_id'):
+        skel._track_id = skeleton._track_id
+    return skel
 
 
 

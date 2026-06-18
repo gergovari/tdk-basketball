@@ -157,7 +157,11 @@ class BiggestPersonThrowerDetector(ThrowerDetector):
         
         # Override the id of the thrower object in every frame it appears
         for frame_idx, obj in best_track['frames'].items():
+            original_id = obj.id
             obj.id = unified_id
+            for item in obj_frames[frame_idx]:
+                if isinstance(item, Skeleton) and getattr(item, '_track_id', -1) == original_id:
+                    item._track_id = unified_id
             
         dummy = next(iter(best_track['frames'].values()))
         return [dummy]

@@ -18,6 +18,7 @@ _COCO_TO_PIPELINE = {
 }
 
 
+
 class YOLOPose:
     """Unified person detector + pose estimator using YOLO-Pose.
 
@@ -26,8 +27,37 @@ class YOLOPose:
     pipeline no longer needs a separate YOLO detection model.
     """
 
-    def __init__(self, model_path='models/yolov8x-pose-p6.pt'):
+    def __init__(self, model_path='models/yolov8x-pose-p6.engine'):
+        import os
         import torch
+
+        # Auto-compile TensorRT engine from .pt weights if the .engine doesn't exist
+        if model_path.endswith('.engine') and not os.path.exists(model_path):
+            import subprocess, sys
+            pt_path = model_path.replace('.engine', '.pt')
+            if not os.path.exists(pt_path):
+                raise FileNotFoundError(
+                    f"Neither '{model_path}' nor '{pt_path}' found. "
+                    "Place the .pt weights in the models/ directory."
+                )
+            print(f"[ml] TensorRT engine not found. Compiling from {pt_path} ...")
+            print(f"[ml] Running compilation in isolated subprocess to limit RAM usage ...")
+            ret = subprocess.run(
+                [sys.executable, "compile_trt.py"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+            )
+            if ret.returncode != 0 or not os.path.exists(model_path):
+                raise RuntimeError(
+                    f"TensorRT engine compilation failed (exit code {ret.returncode}).\n"
+                    "This is likely an OOM kill — the yolov8x-pose-p6 export needs ~12GB RAM.\n"
+                    "To fix:\n"
+                    "  1. Close browsers, IDEs, and other heavy apps\n"
+                    "  2. Optionally add temporary swap:  sudo fallocate -l 16G /swapfile_temp && sudo chmod 600 /swapfile_temp && sudo mkswap /swapfile_temp && sudo swapon /swapfile_temp\n"
+                    "  3. Run:  python compile_trt.py\n"
+                    "  4. Then re-run the pipeline."
+                )
+            print(f"[ml] Compilation complete → {model_path}")
+
         self.model = YOLO(model_path)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.use_half = torch.cuda.is_available()

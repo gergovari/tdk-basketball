@@ -19,7 +19,7 @@ import os
 os.environ["OPENCV_FFMPEG_THREADS"] = "8"
 
 
-def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=0.0, enable_fallback=False):
+def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable_hud=False, full_debug_video=False, max_movement=60.0, output_height=720.0, visualize=False, enable_invalidation=False, max_throws=None, min_kp_conf=0.3, min_keypoints=6, lowpass=0.4, follow_through=0.5, enable_fallback=False):
     if not os.path.isfile(input_video_path):
         print(f"Error: Video file not found: {input_video_path}")
         return
@@ -78,18 +78,6 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
         if os.path.exists(params["output_video_path"]):
             os.remove(params["output_video_path"])
             
-        out_path = os.path.join(output_dir, f"{base_video_id}-NO.mp4")
-        render_throw_video(
-            params["input_video_path"], 
-            out_path, 
-            obj_frames, 
-            0, 
-            len(obj_frames) - 1, 
-            -1, 
-            fps=video.fps,
-            enable_hud=enable_hud,
-            output_height=output_height
-        )
         print(f"Finished {base_video_id}\n")
         return
     print("Detected!")
@@ -124,6 +112,7 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
 
     print(f"Found {prepares_found} prepares and {releases_found} releases, resulting in {len(cycles)} raw cycles!")
 
+    video_fps = video.fps
     video.release()
     if os.path.exists(params["output_video_path"]):
         os.remove(params["output_video_path"])
@@ -138,7 +127,7 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
             0, 
             len(obj_frames) - 1, 
             -1, 
-            fps=video.fps,
+            fps=video_fps,
             enable_hud=True,
             cycles=cycles,
             output_height=output_height
@@ -147,42 +136,14 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
         export_skeleton_data(
             obj_frames,
             debug_csv_path,
-            video.fps,
+            video_fps,
             release_frame=-1,
             start_frame=0,
             end_frame=len(obj_frames) - 1
         )
         print(f"Wrote debug video to {debug_out_path}!")
 
-    if len(cycles) == 0:
-        identifier = "NO"
-        print(f"Detected 0 throws. Rendering full video in one piece as {identifier}...")
-        out_path = os.path.join(output_dir, f"{base_video_id}-{identifier}.mp4")
-        
-        render_throw_video(
-            params["input_video_path"], 
-            out_path, 
-            obj_frames, 
-            first_thrower_frame, 
-            last_thrower_frame, 
-            -1, 
-            fps=video.fps,
-            enable_hud=enable_hud,
-            valid_frames=valid_frames_set,
-            output_height=output_height
-        )
-        csv_path = os.path.join(output_dir, f"{base_video_id}-{identifier}.csv")
-        export_skeleton_data(
-            obj_frames, 
-            csv_path, 
-            video.fps, 
-            release_frame=-1, 
-            start_frame=first_thrower_frame, 
-            end_frame=last_thrower_frame
-        )
-        print(f"Finished {base_video_id}\n")
-        return
-        
+
 
 
     print("Rendering isolated throws...")
@@ -197,7 +158,7 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
             start_frame=prep_frame,
             end_frame=rel_frame,
             release_frame=rel_frame,
-            fps=video.fps,
+            fps=video_fps,
             enable_hud=enable_hud,
             valid_frames=valid_frames_set,
             output_height=output_height
@@ -206,7 +167,7 @@ def process_video(input_video_path, output_dir, yolo_pose, player_filter, enable
         export_skeleton_data(
             obj_frames, 
             csv_path, 
-            video.fps, 
+            video_fps, 
             release_frame=rel_frame, 
             start_frame=prep_frame, 
             end_frame=rel_frame
@@ -243,7 +204,7 @@ def main():
         '--max-throws', type=int, default=None, help="Maximum number of throws to detect per video (default: unlimited)"
     )
     parser.add_argument(
-        '--pose-model', default="yolov8x-pose-p6.pt", help="YOLO-Pose model filename (in model_dir)"
+        '--pose-model', default="yolov8x-pose-p6.engine", help="YOLO-Pose model filename (in model_dir)"
     )
     parser.add_argument(
         "--output-height", type=float, default=720.0, help="Target height for the output videos"
@@ -258,7 +219,7 @@ def main():
         '--lowpass', type=float, default=0.4, help="Low-pass filter strength on keypoint positions (0=off, 0.8=heavy, default: 0.4)"
     )
     parser.add_argument(
-        '--follow-through', type=float, default=0.0, help="Seconds to record after the release (default: 0.0)"
+        '--follow-through', type=float, default=0.5, help="Seconds to record after the release (default: 0.5)"
     )
     parser.add_argument(
         '--enable-fallback', action="store_true", help="Enable crop-based fallback tracking for dropped skeletons (slows down processing)"

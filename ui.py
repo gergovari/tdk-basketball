@@ -64,7 +64,7 @@ class HUD(Drawable):
         cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (15, 15, 15), -1)
         # Draw border
         cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (255, 200, 0), max(1, int(2 * ui_scale)))
-        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        cv2.addWeighted(overlay, 0.9, frame, 0.1, 0, frame)
 
         font = cv2.FONT_HERSHEY_DUPLEX
         font_mono = cv2.FONT_HERSHEY_SIMPLEX

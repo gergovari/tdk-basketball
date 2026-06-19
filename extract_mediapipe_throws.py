@@ -92,7 +92,9 @@ def process_video(video_path, output_path, landmark_mapping, enable_hud=False, i
         name_no_ext = os.path.splitext(basename)[0]
         
         # Remove trailing -m or -h if present to get the unique name
+        original_suffix = ""
         if name_no_ext.endswith('-m') or name_no_ext.endswith('-h'):
+            original_suffix = name_no_ext[-2:]
             unique_name = name_no_ext[:-2]
         else:
             unique_name = name_no_ext
@@ -102,9 +104,8 @@ def process_video(video_path, output_path, landmark_mapping, enable_hud=False, i
         else:
             safe_print(f"[{base_video_id}] Starting throw {unique_name}...")
             
-        suffix = "-h" if enable_hud else "-m"
-        out_csv_path = os.path.join(output_path, f"{unique_name}-mp{suffix}.csv")
-        out_video_path = os.path.join(output_path, f"{unique_name}-mp{suffix}.mp4")
+        out_csv_path = os.path.join(output_path, f"{unique_name}-mp{original_suffix}.csv")
+        out_video_path = os.path.join(output_path, f"{unique_name}-mp{original_suffix}.mp4")
         
         video_writer = None
         if enable_hud:

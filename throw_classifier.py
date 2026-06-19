@@ -9,12 +9,14 @@ from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassif
 from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from sklearn.inspection import permutation_importance
 
 # Number of timesteps to resample every throw to
 N_TIMESTEPS = 30
 
 # Joints whose Y-trajectory we track
 TRAJECTORY_JOINTS = ['wrist', 'elbow', 'shoulder', 'hip', 'knee']
+MP_TRAJECTORY_JOINTS = ['wrist', 'elbow', 'shoulder', 'hip', 'knee', 'index', 'thumb', 'heel', 'foot_index']
 
 
 def _resample(values, n=N_TIMESTEPS):
@@ -60,7 +62,7 @@ def _extract_group_id(filepath):
         session = 'unknown'
         run = '0'
 
-    m = re.match(r'(\d+)-angle\d+-(\d+)-[hm]\.csv', basename)
+    m = re.match(r'(\d+)-angle\d+-(\d+)(?:-mp)?-[hm]\.csv', basename)
     if m:
         player, throw_num = m.group(1), m.group(2)
         return f'{session}/{run}/{player}-{throw_num}'
@@ -69,7 +71,7 @@ def _extract_group_id(filepath):
     return basename
 
 
-def extract_features(csv_path):
+def extract_features(csv_path, is_mediapipe=False):
     """Extract view-invariant time-series features from a throw CSV.
 
     This is the simple feature set that achieved our best accuracy (68%):
@@ -88,9 +90,11 @@ def extract_features(csv_path):
 
     features = {}
 
+    joints_to_track = MP_TRAJECTORY_JOINTS if is_mediapipe else TRAJECTORY_JOINTS
+
     # --- Pre-extract all Y series ---
     joint_series = {}
-    for joint in TRAJECTORY_JOINTS:
+    for joint in joints_to_track:
         col = f'{prefix}{joint}_y'
         if col not in df.columns:
             return None
@@ -134,10 +138,26 @@ def extract_features(csv_path):
     else:
         features['phase_asymmetry'] = 0.5
 
+    if is_mediapipe:
+        index_y = joint_series.get('index')
+        heel_y = joint_series.get('heel')
+        foot_index_y = joint_series.get('foot_index')
+        
+        if index_y is not None and heel_y is not None and foot_index_y is not None:
+            # Flick: vertical difference between index finger and wrist at peak wrist height
+            features['index_wrist_diff_at_peak'] = float(index_y[peak_idx] - wrist_y[peak_idx])
+            
+            # Index finger range of motion
+            features['index_y_range'] = float(np.ptp(index_y))
+            
+            # Calf raise: difference between foot_index (toes) and heel.
+            # A larger positive difference means the heel is significantly higher (Y is smaller) than the toes.
+            features['calf_raise_max'] = float(np.max(foot_index_y - heel_y))
+
     return features
 
 
-def build_dataset(data_dir):
+def build_dataset(data_dir, is_mediapipe=False):
     """Scan data_dir for annotated CSVs and build feature matrix + labels + groups."""
     X = []
     y = []
@@ -149,13 +169,20 @@ def build_dataset(data_dir):
     for f in files:
         basename = os.path.basename(f)
         label = None
-        if basename.endswith('-h.csv'):
-            label = 1  # Hit
-        elif basename.endswith('-m.csv'):
-            label = 0  # Miss
+        
+        if is_mediapipe:
+            if basename.endswith('-mp-h.csv'):
+                label = 1
+            elif basename.endswith('-mp-m.csv'):
+                label = 0
+        else:
+            if basename.endswith('-h.csv') and not basename.endswith('-mp-h.csv'):
+                label = 1
+            elif basename.endswith('-m.csv') and not basename.endswith('-mp-m.csv'):
+                label = 0
 
         if label is not None:
-            feats = extract_features(f)
+            feats = extract_features(f, is_mediapipe)
             if feats is not None:
                 if feat_names is None:
                     feat_names = list(feats.keys())
@@ -172,9 +199,10 @@ def build_dataset(data_dir):
     return np.array(X), np.array(y), groups, feat_names
 
 
-def train(data_dir, model_save_path):
-    print(f"Scanning '{data_dir}' for annotated CSVs (ending in '-h.csv' or '-m.csv')...")
-    X, y, groups, feat_names = build_dataset(data_dir)
+def train(data_dir, model_save_path, is_mediapipe=False):
+    mp_str = "'-mp-h.csv' or '-mp-m.csv'" if is_mediapipe else "'-h.csv' or '-m.csv'"
+    print(f"Scanning '{data_dir}' for annotated CSVs (ending in {mp_str})...")
+    X, y, groups, feat_names = build_dataset(data_dir, is_mediapipe)
 
     if len(X) == 0:
         print("No annotated data found! Rename CSVs to end with '-h.csv' (hit) or '-m.csv' (miss).")
@@ -263,13 +291,26 @@ def train(data_dir, model_save_path):
 
     # Feature importances
     clf_step = best_model.named_steps['clf']
+    print("\nCalculating Feature Importances...")
     if hasattr(clf_step, 'feature_importances_'):
         importances = clf_step.feature_importances_
-        print("\nTop 15 Feature Importances:")
-        ranked = sorted(zip(feat_names, importances), key=lambda x: x[1], reverse=True)
-        for name_f, imp in ranked[:15]:
-            bar = '█' * int(imp * 200)
-            print(f"  {name_f:30s} {imp:.4f} {bar}")
+    else:
+        # For HistGradientBoosting, calculate permutation importance
+        # We calculate it on the training set to see what the model relied on
+        # (Though calculating on a held-out test set is theoretically better, 
+        # doing it on train is fine to just peek into the model's logic here)
+        result = permutation_importance(best_model, X, y, n_repeats=5, random_state=42, n_jobs=-1)
+        importances = result.importances_mean
+
+    # Ensure importances are normalized (0 to 1) for consistent display
+    if np.sum(importances) > 0:
+        importances = importances / np.sum(importances)
+
+    print("\nTop 15 Feature Importances:")
+    ranked = sorted(zip(feat_names, importances), key=lambda x: x[1], reverse=True)
+    for name_f, imp in ranked[:15]:
+        bar = '█' * int(imp * 200)
+        print(f"  {name_f:30s} {imp:.4f} {bar}")
 
     # Fit the winner on ALL data for deployment
     best_model.fit(X, y)
@@ -281,7 +322,7 @@ def train(data_dir, model_save_path):
     print(f"\nModel saved to {model_save_path}")
 
 
-def predict(csv_path, model_path):
+def predict(csv_path, model_path, is_mediapipe=False):
     if not os.path.exists(model_path):
         print(f"Model not found at '{model_path}'. Run training first.")
         return
@@ -290,7 +331,7 @@ def predict(csv_path, model_path):
         data = pickle.load(f)
         clf = data['model']
 
-    feats = extract_features(csv_path)
+    feats = extract_features(csv_path, is_mediapipe)
     if feats is None:
         print(f"Failed to extract features from {csv_path}.")
         return
@@ -319,13 +360,15 @@ if __name__ == '__main__':
                         help="Path to a single CSV (for prediction).")
     parser.add_argument('--model', type=str, default='models/throw_classifier.pkl',
                         help="Path to save/load the model.")
+    parser.add_argument('--mediapipe', action='store_true',
+                        help="Use MediaPipe landmarks and look for -mp-[hm].csv files.")
 
     args = parser.parse_args()
 
     if args.mode == 'train':
-        train(args.data_dir, args.model)
+        train(args.data_dir, args.model, args.mediapipe)
     elif args.mode == 'predict':
         if not args.csv:
             print("Error: provide --csv for prediction mode.")
         else:
-            predict(args.csv, args.model)
+            predict(args.csv, args.model, args.mediapipe)

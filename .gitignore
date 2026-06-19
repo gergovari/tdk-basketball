@@ -13,3 +13,4 @@ models/*.onnx
 *.engine
 *.zip
 oldataaa
+annotatedvideodata-old

@@ -64,6 +64,15 @@ class HUD(Drawable):
         cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (15, 15, 15), -1)
         # Draw border
         cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (255, 200, 0), max(1, int(2 * ui_scale)))
+
+        if self.detector_name == "MediaPipe":
+            lbox_w = int(330 * ui_scale)
+            lbox_h = int(450 * ui_scale)
+            lbox_x = int(20 * ui_scale)
+            lbox_y = int(20 * ui_scale)
+            cv2.rectangle(overlay, (lbox_x, lbox_y), (lbox_x + lbox_w, lbox_y + lbox_h), (15, 15, 15), -1)
+            cv2.rectangle(overlay, (lbox_x, lbox_y), (lbox_x + lbox_w, lbox_y + lbox_h), (255, 200, 0), max(1, int(2 * ui_scale)))
+
         cv2.addWeighted(overlay, 0.9, frame, 0.1, 0, frame)
 
         font = cv2.FONT_HERSHEY_DUPLEX
@@ -160,6 +169,47 @@ class HUD(Drawable):
                 cv2.putText(frame, "N/A", (box_x + int(250 * ui_scale), y_offset), font_mono, font_scale_sm, (0, 0, 255), thickness)
                 
             y_offset += int(20 * ui_scale)
+
+        if self.detector_name == "MediaPipe":
+            lbox_x = int(20 * ui_scale)
+            lbox_y = int(20 * ui_scale)
+            ly_offset = lbox_y + int(35 * ui_scale)
+            cv2.putText(frame, "[ MEDIAPIPE EXTRA ]", (lbox_x + int(45 * ui_scale), ly_offset), font, font_scale_title, title_color, thickness + 1)
+            ly_offset += int(40 * ui_scale)
+
+            cv2.putText(frame, "NODE", (lbox_x + int(15 * ui_scale), ly_offset), font, font_scale_xs, text_color, thickness)
+            cv2.putText(frame, "X", (lbox_x + int(120 * ui_scale), ly_offset), font, font_scale_xs, text_color, thickness)
+            cv2.putText(frame, "Y", (lbox_x + int(180 * ui_scale), ly_offset), font, font_scale_xs, text_color, thickness)
+            cv2.putText(frame, "CONF", (lbox_x + int(250 * ui_scale), ly_offset), font, font_scale_xs, text_color, thickness)
+            ly_offset += int(25 * ui_scale)
+
+            extra_mapping = {
+                0: "Nose", 2: "L.Eye", 5: "R.Eye", 7: "L.Ear", 8: "R.Ear",
+                17: "L.Pinky", 18: "R.Pinky", 19: "L.Index", 20: "R.Index",
+                21: "L.Thumb", 22: "R.Thumb", 29: "L.Heel", 30: "R.Heel",
+                31: "L.FtIdx", 32: "R.FtIdx"
+            }
+            
+            for e_idx in sorted(extra_mapping.keys()):
+                name = extra_mapping[e_idx]
+                is_left = (e_idx % 2 != 0) and (e_idx != 0)
+                is_right = (e_idx % 2 == 0) and (e_idx != 0)
+                row_col = left_color if is_left else right_color if is_right else text_color
+                
+                cv2.putText(frame, name, (lbox_x + int(15 * ui_scale), ly_offset), font_mono, font_scale_sm, row_col, thickness)
+                
+                if e_idx in norm_coords:
+                    nx, ny, conf = norm_coords[e_idx]
+                    cv2.putText(frame, f"{nx:+.2f}", (lbox_x + int(110 * ui_scale), ly_offset), font_mono, font_scale_sm, title_color, thickness)
+                    cv2.putText(frame, f"{ny:+.2f}", (lbox_x + int(170 * ui_scale), ly_offset), font_mono, font_scale_sm, title_color, thickness)
+                    conf_color = (0, 255, 0) if conf > 0.5 else (0, 0, 255)
+                    cv2.putText(frame, f"{conf*100:.0f}%", (lbox_x + int(250 * ui_scale), ly_offset), font_mono, font_scale_sm, conf_color, thickness)
+                else:
+                    cv2.putText(frame, " - ", (lbox_x + int(110 * ui_scale), ly_offset), font_mono, font_scale_sm, text_color, thickness)
+                    cv2.putText(frame, " - ", (lbox_x + int(170 * ui_scale), ly_offset), font_mono, font_scale_sm, text_color, thickness)
+                    cv2.putText(frame, "N/A", (lbox_x + int(250 * ui_scale), ly_offset), font_mono, font_scale_sm, (0, 0, 255), thickness)
+                    
+                ly_offset += int(20 * ui_scale)
 
 
         # Big Status Text (Release / Prepare)

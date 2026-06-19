@@ -44,15 +44,20 @@ def check_data(data_dir, expected=5, show_ok=False):
 
         # Check for status-tagged files (NO, PARTIAL, MORE)
         status_file = None
-        for tag in ["NO", "PARTIAL", "MORE"]:
-            candidate = throw_dir / f"{base_id}-{tag}.mp4"
-            if candidate.exists():
-                status_file = tag
+        for f in throw_files:
+            m = re.match(rf"^{re.escape(base_id)}-(NO|PARTIAL|MORE)(?:-mp)?(?:-[hm])?\.mp4$", f.name)
+            if m:
+                status_file = m.group(1)
                 break
 
-        # Count numbered throw files (e.g. 1-angle1-1.mp4 ... 1-angle1-5.mp4)
-        numbered = [f for f in throw_files if re.match(rf"^{re.escape(base_id)}-\d+\.mp4$", f.name)]
-        count = len(numbered)
+        # Count numbered throw files by extracting the unique index
+        numbered_set = set()
+        for f in throw_files:
+            m = re.match(rf"^{re.escape(base_id)}-(\d+)(?:-mp)?(?:-[hm])?\.mp4$", f.name)
+            if m:
+                numbered_set.add(m.group(1))
+        
+        count = len(numbered_set)
 
         if status_file:
             problems.append((label, status_file, f"Tagged as {status_file}"))

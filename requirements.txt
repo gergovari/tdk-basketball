@@ -1,3 +1,4 @@
 opencv_python
 ultralytics
 scikit-learn
+mediapipe

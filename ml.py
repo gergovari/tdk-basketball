@@ -64,6 +64,13 @@ class YOLOPose:
         
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
+            
+            # Warmup inference to force TensorRT to initialize its CUDA context
+            # This MUST happen before OpenCV initializes hardware video decoding
+            # otherwise they conflict and trigger CUDA Error 100.
+            import numpy as np
+            dummy_frame = np.zeros((320, 320, 3), dtype=np.uint8)
+            self.model(dummy_frame, verbose=False, imgsz=320, device=self.device, half=self.use_half)
 
     def reset(self):
         """Reset tracker state between videos."""
